@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	readAhead  = 4
+	readAhead  = 8
 	cacheParts = 16
 )
 

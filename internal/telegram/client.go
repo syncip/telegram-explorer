@@ -35,6 +35,9 @@ const (
 	maxFloodWait  = 10 * time.Minute
 	docCacheTTL   = 30 * time.Minute
 	sizeBatch     = 100
+	// transferConns is the number of connections per data center for reading
+	// files. One connection tops out at a few MB/s, more only provoke rate limits.
+	transferConns = 4
 
 	transferRetries = 8
 	transferDelay   = time.Second
@@ -63,6 +66,7 @@ type channelRef struct {
 
 type docRef struct {
 	location *tg.InputDocumentFileLocation
+	dc       int
 	fetched  time.Time
 }
 
@@ -77,11 +81,15 @@ type Client struct {
 	status   Status
 	api      *tg.Client
 	auth     *auth.Client
+	tg       *telegram.Client
 	channel  *channelRef
 	phone    string
 	codeHash string
 
 	docs sync.Map // msg id -> docRef
+
+	poolMu sync.Mutex
+	pools  map[int]*tg.Client // data center -> file connections
 }
 
 // sessionStorage keeps the MTProto session sealed: it grants full account access.
@@ -166,6 +174,41 @@ func repeatable(input bin.Encoder) bool {
 	return false
 }
 
+func (c *Client) transferRetry() transferRetry {
+	return transferRetry{delay: transferDelay, notify: func(err error) {
+		c.Store.Log(store.LevelWarn, store.KindTelegram, "Verbindung unterbrochen, Dateiteil wird wiederholt: %v", err)
+	}}
+}
+
+// filePool returns the file connections to a data center. They bypass the
+// client's middlewares, so these are applied here.
+func (c *Client) filePool(ctx context.Context, dc int) (*tg.Client, error) {
+	c.mu.RLock()
+	client := c.tg
+	c.mu.RUnlock()
+	c.poolMu.Lock()
+	defer c.poolMu.Unlock()
+	if pool, ok := c.pools[dc]; ok {
+		return pool, nil
+	}
+	var (
+		conns telegram.CloseInvoker
+		err   error
+	)
+	if dc == client.Config().ThisDC {
+		conns, err = client.Pool(transferConns)
+	} else {
+		conns, err = client.DC(ctx, dc, transferConns)
+	}
+	if err != nil {
+		return nil, err
+	}
+	pool := tg.NewClient(floodWait{}.Handle(c.transferRetry().Handle(conns)))
+	c.pools[dc] = pool
+	c.Store.Log(store.LevelInfo, store.KindTelegram, "%d Dateiverbindungen zu Rechenzentrum %d aufgebaut", transferConns, dc)
+	return pool, nil
+}
+
 func (c *Client) setStatus(s Status) {
 	c.mu.Lock()
 	c.status = s
@@ -209,15 +252,16 @@ func (c *Client) Run(ctx context.Context) {
 func (c *Client) runOnce(ctx context.Context) error {
 	client := telegram.NewClient(c.AppID, c.AppHash, telegram.Options{
 		SessionStorage: sessionStorage{c},
-		Middlewares: []telegram.Middleware{floodWait{}, transferRetry{delay: transferDelay, notify: func(err error) {
-			c.Store.Log(store.LevelWarn, store.KindTelegram, "Verbindung unterbrochen, Dateiteil wird wiederholt: %v", err)
-		}}},
-		Device: telegram.DeviceConfig{DeviceModel: "Telegram Explorer", SystemVersion: "Docker", AppVersion: "1.0"},
+		Middlewares:    []telegram.Middleware{floodWait{}, c.transferRetry()},
+		Device:         telegram.DeviceConfig{DeviceModel: "Telegram Explorer", SystemVersion: "Docker", AppVersion: "1.0"},
 	})
 	return client.Run(ctx, func(ctx context.Context) error {
 		c.mu.Lock()
-		c.api, c.auth = client.API(), client.Auth()
+		c.api, c.auth, c.tg = client.API(), client.Auth(), client
 		c.mu.Unlock()
+		c.poolMu.Lock()
+		c.pools = map[int]*tg.Client{}
+		c.poolMu.Unlock()
 		status, err := client.Auth().Status(ctx)
 		if err != nil {
 			return fmt.Errorf("auth status: %w", err)
@@ -481,18 +525,22 @@ func documentOf(msg *tg.Message) (*tg.Document, error) {
 	return doc, nil
 }
 
-func (c *Client) remember(msgID int, doc *tg.Document) *tg.InputDocumentFileLocation {
-	loc := &tg.InputDocumentFileLocation{ID: doc.ID, AccessHash: doc.AccessHash, FileReference: doc.FileReference}
-	c.docs.Store(msgID, docRef{location: loc, fetched: time.Now()})
-	return loc
+func (c *Client) remember(msgID int, doc *tg.Document) docRef {
+	ref := docRef{
+		location: &tg.InputDocumentFileLocation{ID: doc.ID, AccessHash: doc.AccessHash, FileReference: doc.FileReference},
+		dc:       doc.DCID,
+		fetched:  time.Now(),
+	}
+	c.docs.Store(msgID, ref)
+	return ref
 }
 
 // location returns a document location. File references expire, so they are
 // refreshed from the message when old or when Telegram rejects them.
-func (c *Client) location(ctx context.Context, api *tg.Client, ch *channelRef, msgID int, fresh bool) (*tg.InputDocumentFileLocation, error) {
+func (c *Client) location(ctx context.Context, api *tg.Client, ch *channelRef, msgID int, fresh bool) (docRef, error) {
 	if v, ok := c.docs.Load(msgID); ok && !fresh {
 		if ref := v.(docRef); time.Since(ref.fetched) < docCacheTTL {
-			return ref.location, nil
+			return ref, nil
 		}
 	}
 	res, err := api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
@@ -500,22 +548,22 @@ func (c *Client) location(ctx context.Context, api *tg.Client, ch *channelRef, m
 		ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}},
 	})
 	if err != nil {
-		return nil, err
+		return docRef{}, err
 	}
 	list, ok := res.(*tg.MessagesChannelMessages)
 	if !ok {
-		return nil, errors.New("unerwartete Antwort von Telegram")
+		return docRef{}, errors.New("unerwartete Antwort von Telegram")
 	}
 	for _, m := range list.Messages {
 		if msg, ok := m.(*tg.Message); ok && msg.ID == msgID {
 			doc, err := documentOf(msg)
 			if err != nil {
-				return nil, err
+				return docRef{}, err
 			}
 			return c.remember(msgID, doc), nil
 		}
 	}
-	return nil, fmt.Errorf("Nachricht %d: %w", msgID, files.ErrMissing)
+	return docRef{}, fmt.Errorf("Nachricht %d: %w", msgID, files.ErrMissing)
 }
 
 // ReadPart implements files.Backend.
@@ -526,15 +574,22 @@ func (c *Client) ReadPart(ctx context.Context, msgID int, part int64) ([]byte, e
 	}
 	fresh := false
 	for attempt := 0; ; attempt++ {
-		loc, err := c.location(ctx, api, ch, msgID, fresh)
+		ref, err := c.location(ctx, api, ch, msgID, fresh)
 		if err != nil {
 			return nil, err
 		}
-		res, err := api.UploadGetFile(ctx, &tg.UploadGetFileRequest{
-			Location: loc,
-			Offset:   part * files.PartSize,
-			Limit:    files.PartSize,
-		})
+		reader := api
+		if pool, err := c.filePool(ctx, ref.dc); err == nil {
+			reader = pool
+		} else {
+			log.Printf("telegram: Dateiverbindungen zu Rechenzentrum %d: %v", ref.dc, err)
+		}
+		req := &tg.UploadGetFileRequest{Location: ref.location, Offset: part * files.PartSize, Limit: files.PartSize}
+		res, err := reader.UploadGetFile(ctx, req)
+		if tgerr.Is(err, "FILE_MIGRATE") {
+			// The main connection knows how to follow a moved file.
+			res, err = api.UploadGetFile(ctx, req)
+		}
 		if tgerr.Is(err, "FILE_REFERENCE_EXPIRED", "FILE_REFERENCE_INVALID") && attempt == 0 {
 			fresh = true
 			continue
