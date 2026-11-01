@@ -4,7 +4,7 @@
   import { cancel, clearFinished, retry, uploads } from './uploads.svelte.js'
   import Icon from './Icon.svelte'
 
-  let { jobs, verify, onverifychange } = $props()
+  let { verify, onverifychange } = $props()
   let collapsed = $state(false)
   let tick = $state(0)
 
@@ -13,17 +13,18 @@
     return () => clearInterval(timer)
   })
 
-  const visible = $derived(uploads.items.filter((i) => i.state !== 'canceled'))
-  const showVerify = $derived(verify && verify.total > 0)
-  const total = $derived(visible.length + jobs.length + (showVerify ? 1 : 0))
+  const STEPS = ['Server', 'Telegram', 'Fertig']
+  const ACTIVE = ['queued', 'running', 'server']
 
-  const stateText = {
-    queued: 'Wartet',
-    done: 'Auf dem Server, geht weiter zu Telegram',
-    skipped: 'Übersprungen',
-    error: 'Fehlgeschlagen',
-  }
+  const visible = $derived(uploads.items.filter((i) => i.state !== 'canceled'))
+  const active = $derived(visible.filter((i) => ACTIVE.includes(i.state)).length + (verify?.running ? 1 : 0))
+  const showVerify = $derived(verify && verify.total > 0)
+  const total = $derived(visible.length + (showVerify ? 1 : 0))
   const pct = (a, b) => (b > 0 ? Math.round((a / b) * 100) : 100)
+
+  const stepOf = (item) => (item.state === 'finished' ? 2 : item.state === 'server' ? 1 : 0)
+  const hashing = (item) => item.state === 'running' && item.sent >= item.size
+  const failed = (item) => item.state === 'error' || item.job?.state === 'failed'
 
   function line(key, done, size, label) {
     tick
@@ -34,18 +35,39 @@
     return parts.join(' · ')
   }
 
+  function detail(item) {
+    if (item.state === 'queued') return 'Wartet auf den Start'
+    if (item.state === 'skipped') return 'Übersprungen, Datei existiert bereits'
+    if (item.state === 'error') return item.error
+    if (item.state === 'finished') return 'Bei Telegram gespeichert, Größe bestätigt'
+    if (item.state === 'running') {
+      if (item.error) return item.error
+      if (hashing(item)) return 'Komplett auf dem Server, Prüfsumme wird berechnet'
+      return line(item.key, item.sent, item.size, 'Zum Server')
+    }
+    const job = item.job
+    if (job?.state === 'failed') return job.error || 'Übertragung zu Telegram fehlgeschlagen'
+    if (job?.error) return `Neuer Versuch folgt: ${job.error}`
+    if (!job?.sent) return 'Liegt auf dem Server, wartet auf Telegram'
+    return line(`job-${item.nodeId}`, job.sent, job.total, 'Zu Telegram')
+  }
+
+  const barValue = (item) => (item.state === 'server' ? pct(item.job?.sent ?? 0, item.size) : pct(item.sent, item.size))
+
   // The overall estimate covers both legs: into the server and on to Telegram.
   const remaining = $derived.by(() => {
     tick
-    const web = uploads.items
-      .filter((i) => i.state === 'running' || i.state === 'queued')
-      .reduce((sum, i) => sum + (i.file.size - i.sent) + i.file.size, 0)
-    const tg = jobs.reduce((sum, j) => sum + j.total - j.sent, 0)
-    const bytes = web + tg
-    if (bytes === 0) return ''
-    const active = jobs.find((j) => j.sent > 0 && !j.error)
-    const speed = active ? track(`job-${active.id}`, active.sent, active.total).speed : 0
-    return speed > 0 ? formatDuration(bytes / speed) : ''
+    let bytes = 0
+    let speed = 0
+    for (const i of uploads.items) {
+      if (i.state === 'running' || i.state === 'queued') bytes += i.size - i.sent + i.size
+      if (i.state === 'running') speed ||= track(i.key, i.sent, i.size).speed
+      if (i.state === 'server' && i.job) {
+        bytes += i.job.total - i.job.sent
+        if (i.job.sent > 0) speed = track(`job-${i.nodeId}`, i.job.sent, i.job.total).speed || speed
+      }
+    }
+    return bytes > 0 && speed > 0 ? formatDuration(bytes / speed) : ''
   })
 
   async function stopVerify() {
@@ -58,7 +80,7 @@
   <section class="panel" aria-label="Übertragungen">
     <header>
       <button class="title" onclick={() => (collapsed = !collapsed)} aria-expanded={!collapsed}>
-        Übertragungen ({total}){remaining ? `, ${remaining}` : ''}
+        {active ? `Übertragungen (${active} aktiv)` : 'Übertragungen abgeschlossen'}{remaining ? `, ${remaining}` : ''}
       </button>
       <button class="icon" title="Abgeschlossene entfernen" aria-label="Abgeschlossene entfernen" onclick={clearFinished}><Icon name="check" size={14} /></button>
     </header>
@@ -83,38 +105,32 @@
         {#each visible as item (item.key)}
           <li>
             <div class="line">
-              <span class="name">{item.name}</span>
+              <span class="name" title={item.name}>{item.name}</span>
               {#if item.state === 'error'}
                 <button class="icon sm" aria-label="Wiederholen" onclick={() => retry(item)}><Icon name="restore" size={13} /></button>
+              {/if}
+              {#if item.state === 'server' && (item.job?.error || item.job?.state === 'failed')}
+                <button class="icon sm" aria-label="Jetzt wiederholen" onclick={() => post(`/nodes/${item.nodeId}/retry`)}><Icon name="restore" size={13} /></button>
               {/if}
               {#if item.state === 'queued' || item.state === 'running' || item.state === 'error'}
                 <button class="icon sm" aria-label="Abbrechen" onclick={() => cancel(item)}><Icon name="close" size={12} /></button>
               {/if}
             </div>
-            {#if item.state === 'running'}
-              <progress max="100" value={pct(item.sent, item.file.size)}></progress>
-              <small>{item.error || line(item.key, item.sent, item.file.size, 'Zum Server')}</small>
-            {:else}
-              <small class:bad={item.state === 'error'}>{item.state === 'error' ? item.error : stateText[item.state]}</small>
+            {#if item.state !== 'skipped'}
+              <ol class="steps" class:failed={failed(item)}>
+                {#each STEPS as step, i (step)}
+                  <li class:done={i < stepOf(item) || item.state === 'finished'} class:current={i === stepOf(item) && item.state !== 'finished'}>
+                    {#if i < stepOf(item) || item.state === 'finished'}<Icon name="check" size={11} />{/if}{step}
+                  </li>
+                {/each}
+              </ol>
             {/if}
-          </li>
-        {/each}
-        {#each jobs as job (job.id)}
-          <li>
-            <div class="line">
-              <span class="name">{job.name}</span>
-              {#if job.state === 'failed' || job.error}
-                <button class="icon sm" aria-label="Jetzt wiederholen" onclick={() => post(`/nodes/${job.id}/retry`)}><Icon name="restore" size={13} /></button>
-              {/if}
-            </div>
-            <progress max="100" value={pct(job.sent, job.total)}></progress>
-            {#if job.error}
-              <small class="bad">Neuer Versuch folgt: {job.error}</small>
-            {:else if job.sent === 0}
-              <small>Wartet auf Telegram</small>
-            {:else}
-              <small>{line(`job-${job.id}`, job.sent, job.total, 'Zu Telegram')}</small>
+            {#if hashing(item)}
+              <progress></progress>
+            {:else if item.state === 'running' || (item.state === 'server' && item.job?.sent > 0)}
+              <progress max="100" value={barValue(item)}></progress>
             {/if}
+            <small class:bad={failed(item)}>{detail(item)}</small>
           </li>
         {/each}
       </ul>
@@ -154,15 +170,45 @@
     list-style: none;
     margin: 0;
     padding: 0;
-    max-height: 280px;
+    max-height: 340px;
     overflow: auto;
   }
-  li {
+  ul > li {
     padding: 8px 12px;
     border-bottom: 1px solid var(--line);
   }
-  li:last-child {
+  ul > li:last-child {
     border-bottom: 0;
+  }
+  .steps {
+    display: flex;
+    gap: 4px;
+    list-style: none;
+    margin: 2px 0 4px;
+    padding: 0;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .steps li {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 8px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+  }
+  .steps li.done {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .steps li.current {
+    color: var(--text);
+    border-color: var(--text);
+    font-weight: 600;
+  }
+  .steps.failed li.current {
+    color: var(--danger);
+    border-color: var(--danger);
   }
   .line {
     display: flex;

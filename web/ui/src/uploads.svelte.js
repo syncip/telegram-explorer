@@ -23,6 +23,28 @@ function storage(fn) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+// fetch cannot report upload progress, and a bar that only moves once per chunk
+// looks stuck on a slow line.
+function putChunk(id, body, offset, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('PATCH', `/api/uploads/${id}`)
+    xhr.setRequestHeader('X-Telex', '1')
+    xhr.setRequestHeader('X-Upload-Offset', String(offset))
+    xhr.upload.onprogress = (e) => onProgress(e.loaded)
+    xhr.onerror = () => reject(new Error('Netzwerkfehler'))
+    xhr.onload = () => {
+      let data = null
+      try {
+        data = JSON.parse(xhr.responseText)
+      } catch {}
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data)
+      else reject(new ApiError(data?.error ?? `Fehler ${xhr.status}`, xhr.status))
+    }
+    xhr.send(body)
+  })
+}
+
 async function sendChunks(item, id, start) {
   let offset = start
   let failures = 0
@@ -30,17 +52,13 @@ async function sendChunks(item, id, start) {
     if (item.state === 'canceled') return
     const end = Math.min(offset + CHUNK, item.file.size)
     try {
-      const res = await api(`/uploads/${id}`, {
-        method: 'PATCH',
-        raw: true,
-        body: item.file.slice(offset, end),
-        headers: { 'X-Upload-Offset': String(offset) },
-      })
+      const from = offset
+      const res = await putChunk(id, item.file.slice(from, end), from, (loaded) => (item.sent = Math.min(from + loaded, end)))
       failures = 0
       offset = res.received
       item.sent = offset
       item.error = ''
-      if (res.node) return
+      if (res.node) return res.node
     } catch (err) {
       // Network trouble is expected on large uploads: ask where the server
       // stands and carry on from there.
@@ -88,9 +106,11 @@ async function run(item) {
     }
     item.id = id
     item.sent = start
-    await sendChunks(item, id, start)
+    const node = await sendChunks(item, id, start)
     storage((s) => s.removeItem(key))
-    if (item.state !== 'canceled') item.state = 'done'
+    if (item.state === 'canceled') return
+    item.nodeId = node.id
+    item.state = 'server'
     uploads.onDone?.(item.parentId)
   } catch (err) {
     item.state = 'error'
@@ -113,14 +133,55 @@ export function enqueue(file, parentId, encrypted, name = file.name) {
     file,
     parentId,
     name,
+    size: file.size,
     encrypted,
     overwrite: false,
     sent: 0,
     state: 'queued',
     error: '',
     id: null,
+    nodeId: null,
+    job: null,
   })
   pump()
+}
+
+// syncJobs follows files on their way from the server to Telegram. Files from
+// SFTP or an earlier session show up here without having been uploaded on this page.
+export async function syncJobs(jobs) {
+  for (const job of jobs) {
+    const item = uploads.items.find((i) => i.nodeId === job.id)
+    if (item) {
+      item.job = job
+    } else if (!uploads.items.some((i) => i.state === 'running' && i.parentId === job.parentId && i.name === job.name)) {
+      uploads.items.push({
+        key: nextKey++,
+        file: null,
+        parentId: job.parentId,
+        name: job.name,
+        size: job.total,
+        sent: job.total,
+        state: 'server',
+        error: '',
+        id: null,
+        nodeId: job.id,
+        job,
+      })
+    }
+  }
+  const ids = new Set(jobs.map((j) => j.id))
+  for (const item of uploads.items.filter((i) => i.state === 'server' && !ids.has(i.nodeId))) {
+    // Not listed can also mean this list is older than the upload, so ask.
+    try {
+      const { node } = await api(`/nodes/${item.nodeId}`)
+      if (node.state !== 'ready') continue
+      item.state = 'finished'
+      item.job = null
+      uploads.onDone?.(item.parentId)
+    } catch (err) {
+      if (err.status === 404) item.state = 'canceled'
+    }
+  }
 }
 
 // resume continues an upload the server still holds. The browser cannot keep a
@@ -146,7 +207,7 @@ export function retry(item) {
 }
 
 export function clearFinished() {
-  uploads.items = uploads.items.filter((i) => ['queued', 'running', 'error'].includes(i.state))
+  uploads.items = uploads.items.filter((i) => ['queued', 'running', 'error', 'server'].includes(i.state))
 }
 
 async function ensureFolder(parentId, name) {

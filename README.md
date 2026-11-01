@@ -26,7 +26,7 @@ A self-hosted file manager with a Windows Explorer look that uses your own Teleg
 ## Features
 
 - **Explorer interface:** folder tree, list and grid view, drag and drop, cut and paste, context menus, search, preview, light and dark mode, and a layout that works on phones.
-- **Large files:** files of any size are split into segments. Uploads resume after an interruption and failed transfers are retried.
+- **Large files:** files of any size are split into segments. Uploads resume after an interruption and failed transfers are retried. Each file shows whether it is on its way to the server, on its way to Telegram or finished.
 - **Optional encryption:** encrypted files are unreadable to Telegram. Unencrypted files stay normal documents you can download directly in Telegram.
 - **Sharing:** public links with optional password, expiry date and download limit. Links open images, videos and PDFs directly. Shared files are marked in the list, and a share can be ended at any time.
 - **SFTP:** browse, upload and download with any SFTP client. It stays off until you switch it on.

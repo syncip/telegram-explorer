@@ -1,6 +1,6 @@
 <script>
   import { api, formatDate, formatSize, kindOf, post, ROOT, stateLabel, typeLabel } from './api.js'
-  import { addDropped, addFolderInput, cancel as cancelUpload, enqueue, resume, retry as retryUpload, uploads } from './uploads.svelte.js'
+  import { addDropped, addFolderInput, cancel as cancelUpload, enqueue, resume, retry as retryUpload, syncJobs, uploads } from './uploads.svelte.js'
   import Dialog from './Dialog.svelte'
   import FileIcon from './FileIcon.svelte'
   import Icon from './Icon.svelte'
@@ -598,6 +598,7 @@
     }
     if (!list) return
     jobs = list
+    syncJobs(list)
     if (list.length !== lastJobs) load()
     lastJobs = list.length
   }
@@ -609,7 +610,7 @@
     return () => clearInterval(timer)
   })
 
-  const pendingTotal = $derived(jobs.length + uploads.items.filter((i) => i.state === 'running' || i.state === 'queued').length)
+  const pendingTotal = $derived(uploads.items.filter((i) => ['queued', 'running', 'server'].includes(i.state)).length)
 </script>
 
 <svelte:window bind:innerWidth={windowWidth} onkeydown={onKey} onclick={() => { menu = null; uploadMenu = false }} />
@@ -872,7 +873,7 @@
   </footer>
 </div>
 
-<UploadPanel {jobs} {verify} onverifychange={poll} />
+<UploadPanel {verify} onverifychange={poll} />
 
 {#if menu}
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus -->
