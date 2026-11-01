@@ -1,11 +1,12 @@
-FROM node:26-alpine AS ui
+FROM --platform=$BUILDPLATFORM node:26-alpine AS ui
 WORKDIR /src/web/ui
 COPY web/ui/package.json web/ui/package-lock.json ./
 RUN npm ci --no-fund --no-audit
 COPY web/ui/ ./
 RUN npm run build
 
-FROM golang:1.27-alpine AS app
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS app
+ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -13,7 +14,7 @@ COPY cmd ./cmd
 COPY internal ./internal
 COPY web/embed.go ./web/embed.go
 COPY --from=ui /src/web/dist ./web/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /telex ./cmd/telex
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /telex ./cmd/telex
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates mailcap \

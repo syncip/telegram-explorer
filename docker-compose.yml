@@ -1,12 +1,13 @@
 services:
   telex:
-    build: .
+    image: r600/telegram-explorer:latest
     container_name: telegram-explorer
     restart: unless-stopped
     env_file: .env
     ports:
       # The web UI belongs behind an HTTPS reverse proxy, hence localhost only.
       - "127.0.0.1:8080:8080"
+      # Stays closed until SFTP is switched on in the settings.
       - "2222:2222"
     volumes:
       - telex-data:/data

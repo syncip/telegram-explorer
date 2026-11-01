@@ -80,7 +80,7 @@
     e.stopPropagation()
     const height = COLUMNS.length * 32 + 12
     menu = {
-      x: Math.min(e.clientX, innerWidth - 228),
+      x: Math.min(e.clientX, innerWidth - 258),
       y: Math.min(e.clientY, innerHeight - height - 8),
       keep: true,
       entries: COLUMNS.map((c) => ({ label: c.label, checked: () => columnPrefs.visible.includes(c.key), action: () => toggleColumn(c.key) })),
@@ -398,7 +398,7 @@
     if (entries.length === 0) return
     const height = entries.reduce((h, i) => h + (i.sep ? 9 : 32), 12)
     menu = {
-      x: Math.min(e.clientX, innerWidth - 228),
+      x: Math.min(e.clientX, innerWidth - 258),
       y: Math.max(8, Math.min(e.clientY, innerHeight - height - 8)),
       entries,
     }
@@ -1223,7 +1223,7 @@
   .menu {
     position: fixed;
     z-index: 50;
-    width: 220px;
+    width: 250px;
     padding: 4px;
     background: var(--surface);
     border: 1px solid var(--line);
