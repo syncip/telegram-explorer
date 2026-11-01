@@ -297,8 +297,12 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, n *store.Node
 	defer reader.Close()
 	h := w.Header()
 	h.Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox")
-	if n.Mime == "application/pdf" {
+	switch {
+	case n.Mime == "application/pdf":
 		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+	case strings.HasPrefix(n.Mime, "video/"), strings.HasPrefix(n.Mime, "audio/"):
+		// The browser's own player does not load inside a sandbox.
+		h.Set("Content-Security-Policy", "default-src 'none'; media-src 'self'; style-src 'unsafe-inline'")
 	}
 	disposition := "attachment"
 	if inline && inlineAllowed(n.Mime) {
@@ -464,6 +468,23 @@ func (s *Server) uploadStatus(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return writeJSON(w, map[string]any{"id": u.ID, "received": u.Received, "size": u.Size})
+}
+
+func (s *Server) folderUploads(w http.ResponseWriter, r *http.Request) error {
+	id, err := pathID(r, "id")
+	if err != nil {
+		return err
+	}
+	list, err := s.Engine.Store.UploadsIn(id)
+	if err != nil {
+		return err
+	}
+	out := make([]map[string]any, len(list))
+	for i, u := range list {
+		out[i] = map[string]any{"id": u.ID, "parentId": u.ParentID, "name": u.Name, "size": u.Size,
+			"received": u.Received, "encrypted": u.Encrypted, "mtime": u.MTime}
+	}
+	return writeJSON(w, out)
 }
 
 func (s *Server) uploadChunk(w http.ResponseWriter, r *http.Request) error {

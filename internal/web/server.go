@@ -190,6 +190,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/trash/restore", s.open(s.restore))
 	mux.HandleFunc("POST /api/trash/purge", s.open(s.purge))
 
+	mux.HandleFunc("GET /api/nodes/{id}/uploads", s.open(s.folderUploads))
 	mux.HandleFunc("POST /api/uploads", s.open(s.createUpload))
 	mux.HandleFunc("GET /api/uploads/{id}", s.open(s.uploadStatus))
 	mux.HandleFunc("PATCH /api/uploads/{id}", s.open(s.uploadChunk))

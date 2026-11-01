@@ -254,6 +254,75 @@ func TestShareLimits(t *testing.T) {
 	}
 }
 
+func TestDirectShare(t *testing.T) {
+	e := newEnv(t)
+	e.setup()
+	png := []byte("\x89PNG\r\n\x1a\nbild")
+	id := e.upload(store.RootID, "bild.png", png, true)
+	zip := e.upload(store.RootID, "paket.bin", []byte("daten"), true)
+	folder, _ := e.engine.Store.Mkdir(store.RootID, "ordner")
+	e.waitReady(id)
+	e.waitReady(zip)
+
+	share := func(body map[string]any) string {
+		var out struct{ Token string }
+		json.Unmarshal(e.must("POST", "/api/shares", body), &out)
+		return "/s/" + out.Token
+	}
+	visitorJar, _ := cookiejar.New(nil)
+	visitor := &env{t: t, srv: e.srv, client: &http.Client{Jar: visitorJar, CheckRedirect: e.client.CheckRedirect}}
+
+	res, got := visitor.do("GET", share(map[string]any{"nodeId": id}), nil)
+	if res.StatusCode != 200 || !bytes.Equal(got, png) || res.Header.Get("Content-Type") != "image/png" || !strings.HasPrefix(res.Header.Get("Content-Disposition"), "inline") {
+		t.Fatalf("image: %d %v", res.StatusCode, res.Header)
+	}
+	if res, _ := visitor.do("GET", share(map[string]any{"nodeId": zip}), nil); !strings.HasPrefix(res.Header.Get("Content-Disposition"), "attachment") {
+		t.Fatalf("other file: %v", res.Header)
+	}
+	if _, body := visitor.do("GET", share(map[string]any{"nodeId": folder.ID}), nil); !strings.Contains(string(body), "ZIP") {
+		t.Fatal("folders keep their page")
+	}
+	limited := share(map[string]any{"nodeId": id, "maxDownloads": 1})
+	if _, body := visitor.do("GET", limited, nil); !strings.Contains(string(body), "Herunterladen") {
+		t.Fatal("limited links keep their page")
+	}
+	locked := share(map[string]any{"nodeId": id, "password": "geheim"})
+	if _, body := visitor.do("GET", locked, nil); !strings.Contains(string(body), "Kennwort") {
+		t.Fatal("password comes first")
+	}
+	form := []byte("password=geheim")
+	visitor.do("POST", locked, form, "Content-Type", "application/x-www-form-urlencoded")
+	if res, got := visitor.do("GET", locked, nil); res.StatusCode != 200 || !bytes.Equal(got, png) {
+		t.Fatalf("after password: %d", res.StatusCode)
+	}
+}
+
+func TestUnfinishedUploadsAreListed(t *testing.T) {
+	e := newEnv(t)
+	e.setup()
+	var created struct{ ID string }
+	json.Unmarshal(e.must("POST", "/api/uploads", map[string]any{"parentId": store.RootID, "name": "gross.bin", "size": 10, "encrypted": true, "mtime": 1234}), &created)
+	e.must("PATCH", "/api/uploads/"+created.ID, []byte("1234"), "X-Upload-Offset", "0")
+
+	var list []struct {
+		ID       string
+		Name     string
+		Size     int64
+		Received int64
+		MTime    int64
+	}
+	json.Unmarshal(e.must("GET", fmt.Sprintf("/api/nodes/%d/uploads", store.RootID), nil), &list)
+	if len(list) != 1 || list[0].ID != created.ID || list[0].Received != 4 || list[0].Size != 10 || list[0].MTime != 1234 {
+		t.Fatalf("list: %+v", list)
+	}
+	e.must("DELETE", "/api/uploads/"+created.ID, nil)
+	list = nil
+	json.Unmarshal(e.must("GET", fmt.Sprintf("/api/nodes/%d/uploads", store.RootID), nil), &list)
+	if len(list) != 0 {
+		t.Fatalf("after cancel: %+v", list)
+	}
+}
+
 func TestEndShareStatsAndLog(t *testing.T) {
 	e := newEnv(t)
 	e.setup()

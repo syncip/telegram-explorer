@@ -123,11 +123,20 @@ export function enqueue(file, parentId, encrypted, name = file.name) {
   pump()
 }
 
+// resume continues an upload the server still holds. The browser cannot keep a
+// file across sessions, so the user has to pick it again.
+export function resume(file, upload) {
+  if (file.size !== upload.size || Math.floor(file.lastModified / 1000) !== upload.mtime) {
+    throw new Error(`„${file.name}“ ist nicht die Datei, deren Upload unterbrochen wurde`)
+  }
+  storage((s) => s.setItem(resumeKey({ file, parentId: upload.parentId, name: upload.name }), upload.id))
+  enqueue(file, upload.parentId, upload.encrypted, upload.name)
+}
+
 export async function cancel(item) {
-  const wasRunning = item.state === 'running'
   item.state = 'canceled'
   storage((s) => s.removeItem(resumeKey(item)))
-  if (wasRunning && item.id) await api(`/uploads/${item.id}`, { method: 'DELETE' }).catch(() => {})
+  if (item.id) await api(`/uploads/${item.id}`, { method: 'DELETE' }).catch(() => {})
 }
 
 export function retry(item) {

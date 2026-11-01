@@ -34,7 +34,7 @@
 
 <Dialog title="„{node.name}“ teilen" {onclose}>
   {#if link}
-    <p>Der Link ist bereit. Wer ihn hat, kann die Datei entschlüsselt herunterladen.</p>
+    <p>{node.isDir ? 'Der Link ist bereit. Wer ihn hat, kann den Ordner entschlüsselt als ZIP laden.' : maxDownloads > 0 ? 'Der Link ist bereit. Er führt zu einer Seite mit Download-Knopf, damit Link-Vorschauen das Limit nicht verbrauchen.' : 'Der Link ist bereit. Bilder, Videos und PDFs öffnen sich direkt, andere Dateien starten als Download.'}</p>
     <input readonly value={link} aria-label="Freigabelink" onfocus={(e) => e.target.select()} />
     <div class="actions">
       <button class="primary" onclick={copy}>{copied ? 'Kopiert' : 'Link kopieren'}</button>

@@ -922,6 +922,24 @@ func (s *Store) DeleteUpload(id string) error {
 	return err
 }
 
+// UploadsIn returns the unfinished uploads of a folder.
+func (s *Store) UploadsIn(parent int64) ([]*Upload, error) {
+	rows, err := s.db.Query(`SELECT id, parent_id, name, size, received, encrypted, overwrite, mtime, created_at FROM uploads WHERE parent_id = ? ORDER BY name COLLATE NOCASE`, parent)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*Upload{}
+	for rows.Next() {
+		var u Upload
+		if err := rows.Scan(&u.ID, &u.ParentID, &u.Name, &u.Size, &u.Received, &u.Encrypted, &u.Overwrite, &u.MTime, &u.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, &u)
+	}
+	return out, rows.Err()
+}
+
 // StaleUploads returns uploads created before the cutoff.
 func (s *Store) StaleUploads(cutoff int64) ([]string, error) {
 	rows, err := s.db.Query(`SELECT id FROM uploads WHERE created_at < ?`, cutoff)

@@ -1,6 +1,6 @@
 <script>
   import { api, formatDate, formatSize, kindOf, post, ROOT, stateLabel, typeLabel } from './api.js'
-  import { addDropped, addFolderInput, enqueue, uploads } from './uploads.svelte.js'
+  import { addDropped, addFolderInput, cancel as cancelUpload, enqueue, resume, retry as retryUpload, uploads } from './uploads.svelte.js'
   import Dialog from './Dialog.svelte'
   import FileIcon from './FileIcon.svelte'
   import Icon from './Icon.svelte'
@@ -91,6 +91,8 @@
   let currentId = $state(ROOT)
   let path = $state([])
   let items = $state([])
+  let unfinished = $state([])
+  let resumeTarget = null
   let selected = $state(new Set())
   let anchor = $state(null)
   let back = $state([])
@@ -109,6 +111,7 @@
   let uploadMenu = $state(false)
   let jobs = $state([])
   let fileInput = $state()
+  let resumeInput = $state()
   let folderInput = $state()
   let rootNode = $state(null)
 
@@ -136,6 +139,18 @@
     })
   })
 
+  // Unfinished uploads: the ones running here, and the ones only the server
+  // still knows about, for example after the browser was closed.
+  const unfinishedRows = $derived.by(() => {
+    if (mode !== 'files') return []
+    const local = uploads.items.filter((i) => i.parentId === currentId && ['queued', 'running', 'error'].includes(i.state))
+    const ids = new Set(local.map((i) => i.id))
+    return [
+      ...local.map((item) => ({ key: `local-${item.key}`, name: item.name, size: item.file.size, received: item.sent, encrypted: item.encrypted, item })),
+      ...unfinished.filter((u) => u.parentId === currentId && !ids.has(u.id)).map((upload) => ({ ...upload, key: upload.id, upload })),
+    ]
+  })
+
   const selection = $derived(sorted.filter((n) => selected.has(n.id)))
   const single = $derived(selection.length === 1 ? selection[0] : null)
   const canEdit = $derived(mode === 'files' || mode === 'search')
@@ -157,9 +172,10 @@
       } else if (mode === 'search') {
         items = await api('/search?q=' + encodeURIComponent(query))
       } else if (mode === 'files') {
-        const [info, list] = await Promise.all([api(`/nodes/${currentId}`), api(`/nodes/${currentId}/children`)])
+        const [info, list, open] = await Promise.all([api(`/nodes/${currentId}`), api(`/nodes/${currentId}/children`), api(`/nodes/${currentId}/uploads`)])
         path = info.path
         items = list
+        unfinished = open
         encrypt = info.encryptDefault
         if (currentId === ROOT) rootNode = info.node
       }
@@ -504,6 +520,41 @@
     e.target.value = ''
   }
 
+  function pickResume(e) {
+    const [file] = e.target.files
+    e.target.value = ''
+    if (!file) return
+    try {
+      error = ''
+      resume(file, resumeTarget)
+    } catch (err) {
+      error = err.message
+    }
+  }
+
+  function chooseResume(upload) {
+    resumeTarget = upload
+    resumeInput.click()
+  }
+
+  async function discardUpload(row) {
+    if (!confirm(`Unfertigen Upload „${row.name}“ verwerfen?`)) return
+    await guard(async () => {
+      if (row.item) await cancelUpload(row.item)
+      else await api(`/uploads/${row.upload.id}`, { method: 'DELETE' })
+      await load()
+    })
+  }
+
+  const rowState = (row) => {
+    const part = `${formatSize(row.received)} von ${formatSize(row.size)}`
+    const pct = row.size ? Math.floor((row.received / row.size) * 100) : 0
+    if (!row.item) return `Unvollständig, ${pct} %, ${part}`
+    if (row.item.state === 'queued') return `Wartet, ${part}`
+    if (row.item.state === 'error') return `Fehlgeschlagen bei ${pct} %, ${part}`
+    return `Wird hochgeladen, ${pct} %, ${part}`
+  }
+
   async function pickFolder(e) {
     const list = [...e.target.files]
     e.target.value = ''
@@ -536,8 +587,10 @@
   let lastJobs = 0
   let lastVerified = 0
   async function poll() {
-    const [list, check, st] = await Promise.all([api('/jobs'), api('/verify'), api('/stats')].map((p) => p.catch(() => null)))
+    const folder = currentId
+    const [list, check, st, open] = await Promise.all([api('/jobs'), api('/verify'), api('/stats'), api(`/nodes/${folder}/uploads`)].map((p) => p.catch(() => null)))
     if (st) stats = st
+    if (open && folder === currentId) unfinished = open
     if (check) {
       verify = check
       if (check.done !== lastVerified) load()
@@ -561,6 +614,15 @@
 
 <svelte:window bind:innerWidth={windowWidth} onkeydown={onKey} onclick={() => { menu = null; uploadMenu = false }} />
 
+{#snippet uploadActions(row)}
+  <span class="tmp-actions">
+    {#if row.item?.state === 'error'}<button class="secondary" onclick={() => retryUpload(row.item)}>Wiederholen</button>{/if}
+    {#if !row.item}<button class="secondary" title="Die Datei noch einmal auswählen, der Upload läuft dort weiter" onclick={() => chooseResume(row.upload)}>Fortsetzen</button>{/if}
+    <button class="secondary" onclick={() => discardUpload(row)}>Verwerfen</button>
+  </span>
+{/snippet}
+
+<input type="file" hidden bind:this={resumeInput} onchange={pickResume} />
 <input type="file" multiple hidden bind:this={fileInput} onchange={pickFiles} />
 <input type="file" webkitdirectory hidden bind:this={folderInput} onchange={pickFolder} />
 
@@ -681,7 +743,7 @@
         <Shares onerror={(m) => (error = m)} />
       {:else if mode === 'logs'}
         <Logs onerror={(m) => (error = m)} />
-      {:else if items.length === 0}
+      {:else if items.length === 0 && unfinishedRows.length === 0}
         <div class="empty">
           {#if mode === 'trash'}
             <p>Der Papierkorb ist leer.</p>
@@ -731,6 +793,22 @@
                 {/each}
               </tr>
             {/each}
+            {#each unfinishedRows as row (row.key)}
+              <tr class="tmp">
+                <td class="c-name">
+                  <div class="cell">
+                    <FileIcon node={{ name: row.name, isDir: false, encrypted: row.encrypted }} /><span class="label">{row.name}<span class="ext">.tmp</span></span>
+                  </div>
+                </td>
+                <td colspan={Math.max(1, shownColumns.length)}>
+                  <div class="tmp-line">
+                    <progress max={row.size || 1} value={row.received}></progress>
+                    <span class="tmp-text" title={rowState(row)}>{rowState(row)}</span>
+                    {@render uploadActions(row)}
+                  </div>
+                </td>
+              </tr>
+            {/each}
           </tbody>
         </table>
       {:else}
@@ -753,6 +831,14 @@
               <span>{node.name}</span>
               {#if node.shared}<i class="shared corner" title="Wird geteilt"><Icon name="link" size={14} /></i>{/if}
             </button>
+          {/each}
+          {#each unfinishedRows as row (row.key)}
+            <div class="tile tmp" title={rowState(row)}>
+              <FileIcon node={{ name: row.name, isDir: false, encrypted: row.encrypted }} size={56} />
+              <span>{row.name}<span class="ext">.tmp</span></span>
+              <progress max={row.size || 1} value={row.received}></progress>
+              {@render uploadActions(row)}
+            </div>
           {/each}
         </div>
       {/if}
@@ -1219,6 +1305,43 @@
     background: var(--surface);
     border-top: 1px solid var(--line);
     padding: 0 12px;
+  }
+  .tmp {
+    color: var(--muted);
+  }
+  .tmp .ext {
+    opacity: 0.7;
+  }
+  .tmp progress {
+    width: 120px;
+    height: 6px;
+    flex: none;
+    accent-color: var(--accent);
+  }
+  .tile.tmp progress {
+    width: 100%;
+  }
+  .tmp-line {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .tmp-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tmp-actions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    flex: none;
+  }
+  .tmp-actions button {
+    height: 26px;
+    padding: 0 8px;
   }
   .menu {
     position: fixed;

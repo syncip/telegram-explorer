@@ -28,7 +28,7 @@ A self-hosted file manager with a Windows Explorer look that uses your own Teleg
 - **Explorer interface:** folder tree, list and grid view, drag and drop, cut and paste, context menus, search, preview, light and dark mode, and a layout that works on phones.
 - **Large files:** files of any size are split into segments. Uploads resume after an interruption and failed transfers are retried.
 - **Optional encryption:** encrypted files are unreadable to Telegram. Unencrypted files stay normal documents you can download directly in Telegram.
-- **Sharing:** public links with optional password, expiry date and download limit. Shared files are marked in the list, and a share can be ended at any time.
+- **Sharing:** public links with optional password, expiry date and download limit. Links open images, videos and PDFs directly. Shared files are marked in the list, and a share can be ended at any time.
 - **SFTP:** browse, upload and download with any SFTP client. It stays off until you switch it on.
 - **File checks:** a quick check asks Telegram whether a file still exists, without a download. A full check downloads it and compares checksums.
 - **Configurable columns:** date, type, size, encryption, sharing, state, file count, segment count, MD5 and SHA-256.
@@ -176,9 +176,10 @@ To run without a proxy, set `TRUST_PROXY=0` and change the port line to `8080:80
 ## Using it
 
 - **Upload:** drag files or folders into the window, or use *Hochladen*. The lock button in the toolbar decides whether the next upload is encrypted.
+- **Unfinished uploads:** they appear in their folder as a `.tmp` row with their progress. *Fortsetzen* continues after you pick the same file again, *Verwerfen* removes it. Unfinished uploads are deleted after 7 days.
 - **Folder defaults:** *Eigenschaften* on a folder sets whether uploads into it are encrypted. This also applies to SFTP.
 - **Columns:** open *Spalten* or right-click the column header. Drag a column edge to resize it.
-- **Share:** right-click a file and choose *Teilen*. Active shares are listed under *Freigaben*, where each one can be ended.
+- **Share:** right-click a file and choose *Teilen*. Links open images, videos, audio, PDFs and text directly, and other files start downloading. Folders and links with a download limit show a page with a download button, so that link previews in chat apps do not use up the limit. Active shares are listed under *Freigaben*, where each one can be ended.
 - **Check files:** *Datei prüfen* or *Ordner prüfen* asks Telegram whether every segment still exists with the right size. *Inhalt prüfen* downloads the file and also detects changed content.
 - **Log:** *Protokoll* can be filtered by level and category and keeps the latest 5,000 entries.
 

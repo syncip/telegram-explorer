@@ -91,7 +91,20 @@ func (s *Server) sharePage(w http.ResponseWriter, r *http.Request) {
 		s.renderShare(w, http.StatusNotFound, shareView{Gone: true})
 		return
 	}
+	if s.direct(r, sh) {
+		s.wrap(func(w http.ResponseWriter, r *http.Request) error {
+			return s.sendShare(w, r, sh, true)
+		})(w, r)
+		return
+	}
 	s.renderShareState(w, r, sh, "")
+}
+
+// direct reports whether a link opens the file itself. Folders need the page to
+// explain the ZIP. Limited links keep it too, because link previews in chat apps
+// would otherwise use up the downloads.
+func (s *Server) direct(r *http.Request, sh *store.Share) bool {
+	return !sh.IsDir && sh.MaxDownloads == 0 && s.Engine.Vault() != nil && s.granted(r, sh)
 }
 
 func (s *Server) renderShareState(w http.ResponseWriter, r *http.Request, sh *store.Share, msg string) {
@@ -144,35 +157,41 @@ func (s *Server) shareDownload(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/s/"+sh.Token, http.StatusSeeOther)
 			return nil
 		}
-		if s.Engine.Vault() == nil {
-			return httpError{http.StatusServiceUnavailable, "Speicher ist gesperrt"}
-		}
-		n, err := s.Engine.Store.Get(sh.NodeID)
+		return s.sendShare(w, r, sh, false)
+	})(w, r)
+}
+
+func (s *Server) sendShare(w http.ResponseWriter, r *http.Request, sh *store.Share, inline bool) error {
+	if s.Engine.Vault() == nil {
+		return httpError{http.StatusServiceUnavailable, "Speicher ist gesperrt"}
+	}
+	n, err := s.Engine.Store.Get(sh.NodeID)
+	if err != nil {
+		return err
+	}
+	// A range could read a file piece by piece without ever using up the
+	// limit, so limited links always serve the whole file.
+	if sh.MaxDownloads != 0 {
+		r.Header.Del("Range")
+	}
+	if r.Method == http.MethodGet && r.Header.Get("Range") == "" {
+		ok, err := s.Engine.Store.CountDownload(sh.Token)
 		if err != nil {
 			return err
 		}
-		// A range could read a file piece by piece without ever using up the
-		// limit, so limited links always serve the whole file.
-		if sh.MaxDownloads != 0 {
-			r.Header.Del("Range")
+		if !ok {
+			return store.ErrNotFound
 		}
-		if r.Method == http.MethodGet && r.Header.Get("Range") == "" {
-			ok, err := s.Engine.Store.CountDownload(sh.Token)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return store.ErrNotFound
-			}
+	}
+	s.logDownload(r, "über Freigabe geladen von "+s.clientIP(r), n.Name)
+	// Ending a share has to work, so nothing on the way may keep a copy.
+	w.Header().Set("Cache-Control", "no-store")
+	if n.IsDir {
+		entries, err := s.Engine.Store.Descendants(n.ID, n.Name+"/")
+		if err != nil {
+			return err
 		}
-		s.logDownload(r, "über Freigabe geladen von "+s.clientIP(r), n.Name)
-		if n.IsDir {
-			entries, err := s.Engine.Store.Descendants(n.ID, n.Name+"/")
-			if err != nil {
-				return err
-			}
-			return s.writeZip(w, r, n.Name+".zip", entries)
-		}
-		return s.serveFile(w, r, n, false)
-	})(w, r)
+		return s.writeZip(w, r, n.Name+".zip", entries)
+	}
+	return s.serveFile(w, r, n, inline)
 }

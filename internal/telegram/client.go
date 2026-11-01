@@ -35,6 +35,9 @@ const (
 	maxFloodWait  = 10 * time.Minute
 	docCacheTTL   = 30 * time.Minute
 	sizeBatch     = 100
+
+	transferRetries = 8
+	transferDelay   = time.Second
 )
 
 // Login steps.
@@ -124,6 +127,45 @@ func (floodWait) Handle(next tg.Invoker) telegram.InvokeFunc {
 	}
 }
 
+// transferRetry repeats file parts after a lost connection. The library leaves
+// acknowledged requests alone, because Telegram may have run them already. For
+// file parts that is harmless, and without this one dropped connection would
+// throw away everything sent for the block so far.
+type transferRetry struct {
+	notify func(error)
+	delay  time.Duration
+}
+
+func (t transferRetry) Handle(next tg.Invoker) telegram.InvokeFunc {
+	return func(ctx context.Context, input bin.Encoder, output bin.Decoder) error {
+		for attempt := 0; ; attempt++ {
+			err := next.Invoke(ctx, input, output)
+			if err == nil || attempt == transferRetries || ctx.Err() != nil || !repeatable(input) {
+				return err
+			}
+			if _, answered := tgerr.As(err); answered {
+				return err
+			}
+			if attempt == 0 {
+				t.notify(err)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(min(t.delay<<attempt, 30*t.delay)):
+			}
+		}
+	}
+}
+
+func repeatable(input bin.Encoder) bool {
+	switch input.(type) {
+	case *tg.UploadSaveBigFilePartRequest, *tg.UploadSaveFilePartRequest, *tg.UploadGetFileRequest:
+		return true
+	}
+	return false
+}
+
 func (c *Client) setStatus(s Status) {
 	c.mu.Lock()
 	c.status = s
@@ -167,8 +209,10 @@ func (c *Client) Run(ctx context.Context) {
 func (c *Client) runOnce(ctx context.Context) error {
 	client := telegram.NewClient(c.AppID, c.AppHash, telegram.Options{
 		SessionStorage: sessionStorage{c},
-		Middlewares:    []telegram.Middleware{floodWait{}},
-		Device:         telegram.DeviceConfig{DeviceModel: "Telegram Explorer", SystemVersion: "Docker", AppVersion: "1.0"},
+		Middlewares: []telegram.Middleware{floodWait{}, transferRetry{delay: transferDelay, notify: func(err error) {
+			c.Store.Log(store.LevelWarn, store.KindTelegram, "Verbindung unterbrochen, Dateiteil wird wiederholt: %v", err)
+		}}},
+		Device: telegram.DeviceConfig{DeviceModel: "Telegram Explorer", SystemVersion: "Docker", AppVersion: "1.0"},
 	})
 	return client.Run(ctx, func(ctx context.Context) error {
 		c.mu.Lock()
