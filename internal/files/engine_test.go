@@ -71,6 +71,59 @@ func put(t *testing.T, e *Engine, name string, data []byte, encrypted bool) *sto
 	return n
 }
 
+type failingBackend struct {
+	*LocalBackend
+	puts int
+}
+
+func (b *failingBackend) Put(ctx context.Context, name, mime string, r io.Reader, size int64, progress func(int64)) (int, error) {
+	if b.puts++; b.puts == 2 {
+		return 0, errors.New("abgebrochen")
+	}
+	return b.LocalBackend.Put(ctx, name, mime, r, size, progress)
+}
+
+func TestBlockSizeChange(t *testing.T) {
+	local, err := NewLocalBackend(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := setup(t, &failingBackend{LocalBackend: local})
+	ctx := context.Background()
+	data := make([]byte, 9*PartSize)
+	rand.Read(data)
+
+	// An upload that broke off keeps its block size when the setting changes.
+	resumed := put(t, e, "alt.bin", data, true)
+	if err := e.upload(ctx, resumed); err == nil {
+		t.Fatal("expected the second block to fail")
+	}
+	if err := e.SetBlockMiB(2); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.upload(ctx, resumed); err != nil {
+		t.Fatal(err)
+	}
+	e.Store.MarkReady(resumed.ID)
+
+	// Files stored with the old size stay readable, new ones use the new size.
+	fresh := put(t, e, "neu.bin", data, true)
+	if err := e.upload(ctx, fresh); err != nil {
+		t.Fatal(err)
+	}
+	e.Store.MarkReady(fresh.ID)
+	for id, want := range map[int64]int{resumed.ID: 3, fresh.ID: 5} {
+		blocks, _ := e.Store.Blocks(id)
+		if len(blocks) != want {
+			t.Fatalf("node %d: got %d blocks, want %d", id, len(blocks), want)
+		}
+		n, _ := e.Store.Get(id)
+		if err := e.Verify(ctx, n); err != nil {
+			t.Fatalf("node %d: %v", id, err)
+		}
+	}
+}
+
 func TestRoundTripAndRandomAccess(t *testing.T) {
 	sizes := []int{1, vault.SegmentPlain - 1, vault.SegmentPlain, vault.SegmentPlain + 1, 4*vault.SegmentPlain + 7, 9*PartSize + 3}
 	for _, encrypted := range []bool{true, false} {

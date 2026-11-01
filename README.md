@@ -41,7 +41,7 @@ Mit nginx brauchst du zusätzlich `client_max_body_size 64m;`, `proxy_request_bu
 
 ## SFTP
 
-SFTP bleibt aus, bis du unter **Einstellungen** ein eigenes SFTP-Kennwort setzt. Es läuft auf Port 2222 mit deinem Benutzernamen. FTP ist bewusst nicht eingebaut, weil es Kennwörter im Klartext überträgt.
+SFTP bleibt aus, bis du unter **Einstellungen** ein eigenes SFTP-Kennwort setzt. Es läuft auf Port 2222 mit deinem Benutzernamen. Mit **SFTP abschalten** werden der Port geschlossen und laufende Sitzungen beendet. FTP ist bewusst nicht eingebaut, weil es Kennwörter im Klartext überträgt.
 
 ```bash
 sftp -P 2222 benutzer@speicher.example.de

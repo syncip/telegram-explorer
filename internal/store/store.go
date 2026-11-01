@@ -177,9 +177,10 @@ var migrations = []struct{ table, column, def string }{
 // Verification results. VerifyError means the check could not finish, which
 // says nothing about the file.
 const (
-	VerifyOK    = "ok"
-	VerifyBad   = "bad"
-	VerifyError = "error"
+	VerifyOK      = "ok"
+	VerifyPresent = "present"
+	VerifyBad     = "bad"
+	VerifyError   = "error"
 )
 
 // Node is a file or a folder.

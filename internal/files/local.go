@@ -78,6 +78,22 @@ func (b *LocalBackend) ReadPart(_ context.Context, id int, part int64) ([]byte, 
 	return buf[:n], nil
 }
 
+// Sizes implements Backend.
+func (b *LocalBackend) Sizes(_ context.Context, ids []int) (map[int]int64, error) {
+	sizes := make(map[int]int64, len(ids))
+	for _, id := range ids {
+		info, err := os.Stat(b.path(id))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		sizes[id] = info.Size()
+	}
+	return sizes, nil
+}
+
 // Delete implements Backend.
 func (b *LocalBackend) Delete(_ context.Context, ids []int) error {
 	for _, id := range ids {

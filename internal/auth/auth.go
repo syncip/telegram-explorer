@@ -166,6 +166,12 @@ func (m *Manager) LogoutAll() {
 	m.sessions = map[string]time.Time{}
 }
 
+// SFTPEnabled reports whether an SFTP password is set.
+func (m *Manager) SFTPEnabled() bool {
+	u, err := m.User()
+	return err == nil && u != nil && u.SFTP != ""
+}
+
 // CheckSFTP validates SFTP credentials. SFTP has no second factor, so it uses
 // its own password and stays closed until one is set.
 func (m *Manager) CheckSFTP(username, password string) bool {

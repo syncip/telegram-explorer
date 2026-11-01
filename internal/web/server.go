@@ -48,6 +48,8 @@ type Server struct {
 	TrustProxy bool
 	// OnUnlock runs once the vault is open.
 	OnUnlock func()
+	// OnSFTPChange runs after the SFTP password was set or removed.
+	OnSFTPChange func() error
 
 	uploadLocks sync.Map
 	grants      sync.Map // share password grant -> expiry
@@ -201,6 +203,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/settings/password", s.open(s.setPassword))
 	mux.HandleFunc("POST /api/settings/passphrase", s.open(s.setPassphrase))
 	mux.HandleFunc("POST /api/settings/sftp", s.open(s.setSFTP))
+	mux.HandleFunc("POST /api/settings/blocks", s.open(s.setBlocks))
 	mux.HandleFunc("POST /api/settings/totp/begin", s.open(s.totpBegin))
 	mux.HandleFunc("POST /api/settings/totp/confirm", s.open(s.totpConfirm))
 	mux.HandleFunc("POST /api/settings/totp/disable", s.open(s.totpDisable))

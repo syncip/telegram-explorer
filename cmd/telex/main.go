@@ -104,7 +104,7 @@ func run() error {
 		})
 	}
 
-	server := &web.Server{Engine: engine, Auth: manager, UI: webui.FS(), OnUnlock: onUnlock,
+	server := &web.Server{Engine: engine, Auth: manager, UI: webui.FS(), OnUnlock: onUnlock, OnSFTPChange: sftpServer.Sync,
 		TrustProxy: os.Getenv("TRUST_PROXY") == "1", SetupCode: auth.Token(9)}
 	if tgClient != nil {
 		server.Telegram = tgClient

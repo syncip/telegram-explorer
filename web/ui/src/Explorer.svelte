@@ -285,9 +285,9 @@
     })
   }
 
-  async function verifyNodes(ids) {
+  async function verifyNodes(ids, deep = false) {
     await guard(async () => {
-      await post('/verify', { ids })
+      await post('/verify', { ids, deep })
       await poll()
     })
   }
@@ -371,6 +371,7 @@
       if (!many) entries.push({ label: 'Öffnen', action: () => open(node), bold: true })
       entries.push({ label: many || node.isDir ? 'Als ZIP herunterladen' : 'Herunterladen', icon: 'download', action: () => download() })
       entries.push({ label: many ? 'Auswahl prüfen' : node.isDir ? 'Ordner prüfen' : 'Datei prüfen', icon: 'check', action: () => verifyNodes(selection.map((n) => n.id)) })
+      entries.push({ label: 'Inhalt prüfen (lädt herunter)', icon: 'download', action: () => verifyNodes(selection.map((n) => n.id), true) })
       if (!many) entries.push({ label: 'Teilen', icon: 'share', action: () => (modal = { type: 'share', node }) })
       if (!many && node.shared) entries.push({ label: 'Freigabe beenden', icon: 'link', action: () => endShare(node) })
       entries.push({ sep: true })
@@ -387,6 +388,7 @@
       if (clipboard.length) entries.push({ label: `Einfügen (${clipboard.length})`, icon: 'paste', action: paste })
       entries.push({ sep: true })
       entries.push({ label: 'Ordner prüfen', icon: 'check', action: () => verifyNodes([currentId]) })
+      entries.push({ label: 'Inhalt prüfen (lädt herunter)', icon: 'download', action: () => verifyNodes([currentId], true) })
       entries.push({ label: 'Aktualisieren', icon: 'refresh', action: refreshAll })
     }
     placeMenu(e, entries)
@@ -411,6 +413,7 @@
       { label: 'Neuer Ordner', icon: 'plus', action: () => newFolder(node.id) },
       { label: 'Als ZIP herunterladen', icon: 'download', action: () => download([node]) },
       { label: 'Ordner prüfen', icon: 'check', action: () => verifyNodes([node.id]) },
+      { label: 'Inhalt prüfen (lädt herunter)', icon: 'download', action: () => verifyNodes([node.id], true) },
     ]
     if (!root) {
       entries.push({ label: 'Teilen', icon: 'share', action: () => (modal = { type: 'share', node }) })
@@ -601,7 +604,7 @@
       <button class="tool" aria-label="Einfügen" title="Einfügen (Strg+V)" disabled={!clipboard.length || mode !== 'files'} onclick={paste}><Icon name="paste" /></button>
       <button class="tool" aria-label="Löschen" title="Löschen (Entf)" disabled={!selection.length} onclick={() => remove()}><Icon name="trash" /></button>
       <i class="sep"></i>
-      <button class="tool" aria-label="Ordner prüfen" title="Alle Dateien in diesem Ordner prüfen" disabled={mode !== 'files'} onclick={() => verifyNodes([currentId])}><Icon name="check" /><span>Ordner prüfen</span></button>
+      <button class="tool" aria-label="Ordner prüfen" title="Prüft ohne Download, ob alle Dateien in diesem Ordner noch bei Telegram liegen" disabled={mode !== 'files'} onclick={() => verifyNodes([currentId])}><Icon name="check" /><span>Ordner prüfen</span></button>
     {/if}
     <span class="grow"></span>
     {#if (mode === 'files' || mode === 'search' || mode === 'trash') && view === 'details' && windowWidth >= 760}

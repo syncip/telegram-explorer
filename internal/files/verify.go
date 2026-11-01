@@ -30,9 +30,14 @@ type VerifyStatus struct {
 	Failed     []string `json:"failed"`
 }
 
+type verifyJob struct {
+	node *store.Node
+	deep bool
+}
+
 type verifier struct {
 	mu      sync.Mutex
-	queue   []*store.Node
+	queue   []verifyJob
 	queued  map[int64]bool
 	status  VerifyStatus
 	cancel  context.CancelFunc
@@ -44,11 +49,50 @@ type verifier struct {
 // finish, say because Telegram was away, says nothing about the file.
 func (e *Engine) Verify(ctx context.Context, n *store.Node) error {
 	sum, err := e.check(ctx, n)
+	return e.record(ctx, n, store.VerifyOK, sum, err)
+}
+
+// Present asks the backend whether every block of a file still exists with the
+// recorded size. No content is transferred, so this cannot find changed bytes.
+func (e *Engine) Present(ctx context.Context, n *store.Node) error {
+	err := e.present(ctx, n)
+	if err == nil && n.VerifyStatus == store.VerifyBad {
+		return nil // A full check found damage that this check cannot rule out.
+	}
+	return e.record(ctx, n, store.VerifyPresent, "", err)
+}
+
+func (e *Engine) present(ctx context.Context, n *store.Node) error {
+	blocks, err := e.Store.Blocks(n.ID)
+	if err != nil {
+		return err
+	}
+	ids := make([]int, len(blocks))
+	for i, b := range blocks {
+		ids[i] = b.MsgID
+	}
+	sizes, err := e.Backend.Sizes(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for _, b := range blocks {
+		size, ok := sizes[b.MsgID]
+		if !ok {
+			return fmt.Errorf("Nachricht %d: %w", b.MsgID, ErrMissing)
+		}
+		if size != b.Size {
+			return fmt.Errorf("%w: Nachricht %d hat %d statt %d Bytes", ErrCorrupt, b.MsgID, size, b.Size)
+		}
+	}
+	return nil
+}
+
+func (e *Engine) record(ctx context.Context, n *store.Node, status, sum string, err error) error {
 	switch {
 	case ctx.Err() != nil:
 		return ctx.Err()
 	case err == nil:
-		e.Store.SetVerify(n.ID, store.VerifyOK, "", sum)
+		e.Store.SetVerify(n.ID, status, "", sum)
 	case errors.Is(err, ErrCorrupt), errors.Is(err, ErrMissing), errors.Is(err, io.ErrUnexpectedEOF):
 		e.Store.SetVerify(n.ID, store.VerifyBad, err.Error(), "")
 		e.Store.Log(store.LevelError, store.KindVerify, "„%s“ ist beschädigt: %v", n.Name, err)
@@ -90,8 +134,9 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// EnqueueVerify queues files, and everything below folders, for a check.
-func (e *Engine) EnqueueVerify(ids []int64) (int, error) {
+// EnqueueVerify queues files, and everything below folders, for a check. A deep
+// check downloads the content, the normal one only asks whether it still exists.
+func (e *Engine) EnqueueVerify(ids []int64, deep bool) (int, error) {
 	var nodes []*store.Node
 	for _, id := range ids {
 		n, err := e.Store.Get(id)
@@ -124,9 +169,11 @@ func (e *Engine) EnqueueVerify(ids []int64) (int, error) {
 			continue
 		}
 		v.queued[n.ID] = true
-		v.queue = append(v.queue, n)
+		v.queue = append(v.queue, verifyJob{n, deep})
 		v.status.Total++
-		v.status.BytesTotal += n.Size
+		if deep {
+			v.status.BytesTotal += n.Size
+		}
 		added++
 	}
 	if added > 0 && !v.status.Running {
@@ -154,12 +201,17 @@ func (e *Engine) verifyLoop(ctx context.Context) {
 			}
 			return
 		}
-		n := v.queue[0]
+		job := v.queue[0]
+		n := job.node
 		v.queue = v.queue[1:]
 		v.status.Current = n.Name
 		v.mu.Unlock()
 
-		err := e.Verify(ctx, n)
+		check := e.Present
+		if job.deep {
+			check = e.Verify
+		}
+		err := check(ctx, n)
 
 		v.mu.Lock()
 		switch {

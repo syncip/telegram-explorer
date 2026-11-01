@@ -34,6 +34,7 @@ const (
 	uploadThreads = 4
 	maxFloodWait  = 10 * time.Minute
 	docCacheTTL   = 30 * time.Minute
+	sizeBatch     = 100
 )
 
 // Login steps.
@@ -503,6 +504,44 @@ func (c *Client) ReadPart(ctx context.Context, msgID int, part int64) ([]byte, e
 		}
 		return file.Bytes, nil
 	}
+}
+
+// Sizes implements files.Backend.
+func (c *Client) Sizes(ctx context.Context, msgIDs []int) (map[int]int64, error) {
+	api, ch, err := c.ready()
+	if err != nil {
+		return nil, err
+	}
+	sizes := make(map[int]int64, len(msgIDs))
+	for start := 0; start < len(msgIDs); start += sizeBatch {
+		batch := msgIDs[start:min(start+sizeBatch, len(msgIDs))]
+		ids := make([]tg.InputMessageClass, len(batch))
+		for i, id := range batch {
+			ids[i] = &tg.InputMessageID{ID: id}
+		}
+		res, err := api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
+			Channel: &tg.InputChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash},
+			ID:      ids,
+		})
+		if err != nil {
+			return nil, err
+		}
+		list, ok := res.(*tg.MessagesChannelMessages)
+		if !ok {
+			return nil, errors.New("unerwartete Antwort von Telegram")
+		}
+		for _, m := range list.Messages {
+			msg, ok := m.(*tg.Message)
+			if !ok {
+				continue
+			}
+			if doc, err := documentOf(msg); err == nil {
+				c.remember(msg.ID, doc)
+				sizes[msg.ID] = doc.Size
+			}
+		}
+	}
+	return sizes, nil
 }
 
 // Delete implements files.Backend.

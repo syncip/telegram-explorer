@@ -15,10 +15,10 @@
     onchange()
   }
 
-  async function verify() {
+  async function verify(deep) {
     busy = true
     try {
-      await post('/verify', { ids: [node.id] })
+      await post('/verify', { ids: [node.id], deep })
       result = 'Prüfung läuft. Fortschritt und Ergebnis stehen bei den Übertragungen und in der Spalte „Zustand“.'
     } catch (err) {
       result = `Prüfung fehlgeschlagen: ${err.message}`
@@ -55,12 +55,20 @@
       </select>
     </label>
   {:else}
-    <button class="secondary" disabled={busy} onclick={verify}>Datei prüfen</button>
+    <div class="checks">
+      <button class="secondary" disabled={busy} title="Prüft ohne Download, ob die Datei noch bei Telegram liegt" onclick={() => verify(false)}>Datei prüfen</button>
+      <button class="secondary" disabled={busy} title="Lädt die Datei herunter und vergleicht die Prüfsummen" onclick={() => verify(true)}>Inhalt prüfen</button>
+    </div>
     {#if result}<p>{result}</p>{/if}
   {/if}
 </Dialog>
 
 <style>
+  .checks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
   dl {
     display: grid;
     grid-template-columns: 90px 1fr;

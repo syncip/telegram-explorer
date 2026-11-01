@@ -31,6 +31,12 @@ type Server struct {
 	Addr   string
 	Engine *files.Engine
 	Auth   *auth.Manager
+
+	mu       sync.Mutex
+	ctx      context.Context
+	cfg      *ssh.ServerConfig
+	listener net.Listener
+	conns    map[net.Conn]struct{}
 }
 
 // hostKey loads the persistent key, so clients do not see a changed server
@@ -66,7 +72,8 @@ func (s *Server) hostKey() (ssh.Signer, error) {
 	return ssh.ParsePrivateKey(raw)
 }
 
-// Run serves until ctx ends. The vault must be unlocked.
+// Run serves until ctx ends. The port is only open while an SFTP password is
+// set. The vault must be unlocked.
 func (s *Server) Run(ctx context.Context) error {
 	signer, err := s.hostKey()
 	if err != nil {
@@ -89,28 +96,86 @@ func (s *Server) Run(ctx context.Context) error {
 		},
 	}
 	cfg.AddHostKey(signer)
+	s.mu.Lock()
+	s.ctx, s.cfg, s.conns = ctx, cfg, map[net.Conn]struct{}{}
+	s.mu.Unlock()
+	if err := s.Sync(); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stop()
+	return nil
+}
+
+// Sync opens or closes the port to match the settings. Closing it also ends
+// running sessions, so switching SFTP off takes effect at once.
+func (s *Server) Sync() error {
+	enabled := s.Auth.SFTPEnabled()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cfg == nil {
+		return nil
+	}
+	if !enabled || s.ctx.Err() != nil {
+		s.stop()
+		return nil
+	}
+	if s.listener != nil {
+		return nil
+	}
 	l, err := net.Listen("tcp", s.Addr)
 	if err != nil {
 		return err
 	}
-	go func() {
-		<-ctx.Done()
-		l.Close()
-	}()
+	s.listener = l
 	log.Printf("SFTP lauscht auf %s", s.Addr)
+	go s.accept(l)
+	return nil
+}
+
+func (s *Server) stop() {
+	if s.listener == nil {
+		return
+	}
+	s.listener.Close()
+	s.listener = nil
+	for conn := range s.conns {
+		conn.Close()
+	}
+	log.Print("SFTP beendet")
+}
+
+func (s *Server) accept(l net.Listener) {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil
+			if errors.Is(err, net.ErrClosed) {
+				return
 			}
 			var ne net.Error
 			if errors.As(err, &ne) && ne.Timeout() {
 				continue
 			}
-			return err
+			log.Printf("SFTP: %v", err)
+			return
 		}
-		go s.serve(ctx, conn, cfg)
+		s.mu.Lock()
+		if s.listener != l {
+			s.mu.Unlock()
+			conn.Close()
+			return
+		}
+		s.conns[conn] = struct{}{}
+		ctx, cfg := s.ctx, s.cfg
+		s.mu.Unlock()
+		go func() {
+			s.serve(ctx, conn, cfg)
+			s.mu.Lock()
+			delete(s.conns, conn)
+			s.mu.Unlock()
+		}()
 	}
 }
 

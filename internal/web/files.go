@@ -185,11 +185,14 @@ func (s *Server) purge(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Server) startVerify(w http.ResponseWriter, r *http.Request) error {
-	var in struct{ IDs []int64 }
+	var in struct {
+		IDs  []int64
+		Deep bool
+	}
 	if err := readJSON(r, &in); err != nil {
 		return err
 	}
-	added, err := s.Engine.EnqueueVerify(in.IDs)
+	added, err := s.Engine.EnqueueVerify(in.IDs, in.Deep)
 	if err != nil {
 		return err
 	}
@@ -597,7 +600,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	backup, _ := s.Engine.Store.Setting("backup_at")
-	return writeJSON(w, map[string]any{"username": u.Username, "sftpEnabled": u.SFTP != "", "totpEnabled": u.TOTP != "", "backupAt": string(backup)})
+	return writeJSON(w, map[string]any{"username": u.Username, "sftpEnabled": u.SFTP != "", "totpEnabled": u.TOTP != "", "backupAt": string(backup), "blockMiB": s.Engine.BlockMiB()})
 }
 
 // confirmPassword is required for every change to the credentials, so an
@@ -685,6 +688,31 @@ func (s *Server) setSFTP(w http.ResponseWriter, r *http.Request) error {
 	if err := s.Auth.Save(u); err != nil {
 		return err
 	}
+	if in.Password == "" {
+		s.Engine.Store.Log(store.LevelInfo, store.KindSystem, "SFTP abgeschaltet")
+	} else {
+		s.Engine.Store.Log(store.LevelInfo, store.KindSystem, "SFTP-Kennwort gesetzt")
+	}
+	if s.OnSFTPChange != nil {
+		if err := s.OnSFTPChange(); err != nil {
+			return err
+		}
+	}
+	return writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (s *Server) setBlocks(w http.ResponseWriter, r *http.Request) error {
+	var in struct{ MiB int }
+	if err := readJSON(r, &in); err != nil {
+		return err
+	}
+	if in.MiB < files.MinBlockMiB || in.MiB > files.MaxBlockMiB {
+		return badRequest(fmt.Sprintf("Segmentgröße muss zwischen %d und %d MiB liegen", files.MinBlockMiB, files.MaxBlockMiB))
+	}
+	if err := s.Engine.SetBlockMiB(in.MiB); err != nil {
+		return err
+	}
+	s.Engine.Store.Log(store.LevelInfo, store.KindSystem, "Segmentgröße auf %d MiB gesetzt", in.MiB)
 	return writeJSON(w, map[string]bool{"ok": true})
 }
 

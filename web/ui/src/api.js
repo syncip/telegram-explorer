@@ -71,7 +71,8 @@ export function stateLabel(node) {
   if (node.state === 'pending') return 'Wird übertragen'
   if (node.state === 'failed') return 'Fehlgeschlagen'
   if (node.verifyStatus === 'ok') return `Geprüft am ${formatDate(node.verifiedAt)}`
-  if (node.verifyStatus === 'bad') return 'Beschädigt'
+  if (node.verifyStatus === 'present') return `Vorhanden am ${formatDate(node.verifiedAt)}`
+  if (node.verifyStatus === 'bad') return 'Fehlt oder beschädigt'
   if (node.verifyStatus === 'error') return 'Prüfung nicht möglich'
   return 'Nicht geprüft'
 }

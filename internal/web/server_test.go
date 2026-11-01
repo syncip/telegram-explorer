@@ -310,7 +310,7 @@ func TestFolderVerify(t *testing.T) {
 	raw[10] ^= 1
 	os.WriteFile(path, raw, 0o600)
 
-	e.must("POST", "/api/verify", map[string]any{"ids": []int64{folder.ID}})
+	e.must("POST", "/api/verify", map[string]any{"ids": []int64{folder.ID}, "deep": true})
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		var st files.VerifyStatus
@@ -331,6 +331,38 @@ func TestFolderVerify(t *testing.T) {
 	}
 	if n, _ := e.engine.Store.Get(bad); n.VerifyStatus != store.VerifyBad {
 		t.Fatalf("bad: %+v", n.VerifyStatus)
+	}
+}
+
+func TestQuickVerify(t *testing.T) {
+	e := newEnv(t)
+	e.setup()
+	here := e.upload(store.RootID, "da.bin", make([]byte, 3000), true)
+	gone := e.upload(store.RootID, "weg.bin", make([]byte, 3000), true)
+	damaged := e.upload(store.RootID, "kaputt.bin", make([]byte, 3000), true)
+	e.waitReady(here)
+	e.waitReady(gone)
+	e.waitReady(damaged)
+	ctx := context.Background()
+
+	blocks, _ := e.engine.Store.Blocks(gone)
+	if err := e.engine.Backend.Delete(ctx, []int{blocks[0].MsgID}); err != nil {
+		t.Fatal(err)
+	}
+	e.engine.Store.SetVerify(damaged, store.VerifyBad, "Prüfsumme", "")
+
+	for _, id := range []int64{here, gone, damaged} {
+		n, _ := e.engine.Store.Get(id)
+		e.engine.Present(ctx, n)
+	}
+	if n, _ := e.engine.Store.Get(here); n.VerifyStatus != store.VerifyPresent {
+		t.Fatalf("here: %+v", n.VerifyStatus)
+	}
+	if n, _ := e.engine.Store.Get(gone); n.VerifyStatus != store.VerifyBad {
+		t.Fatalf("gone: %+v", n.VerifyStatus)
+	}
+	if n, _ := e.engine.Store.Get(damaged); n.VerifyStatus != store.VerifyBad || n.VerifyNote != "Prüfsumme" {
+		t.Fatalf("damaged: %+v %q", n.VerifyStatus, n.VerifyNote)
 	}
 }
 
@@ -439,6 +471,7 @@ func TestSFTP(t *testing.T) {
 	user.SFTP = hash
 	e.auth.Save(user)
 	e.auth.Limiter.Success("sftp:127.0.0.1")
+	server.Sync()
 
 	conn, err := dial("sftp-kennwort")
 	if err != nil {
@@ -450,6 +483,21 @@ func TestSFTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
+
+	defer func() {
+		user.SFTP = ""
+		e.auth.Save(user)
+		if err := server.Sync(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.ReadDir("/"); err == nil {
+			t.Fatal("switching SFTP off must end running sessions")
+		}
+		if c, err := net.Dial("tcp", addr); err == nil {
+			c.Close()
+			t.Fatal("switching SFTP off must close the port")
+		}
+	}()
 
 	if err := client.Mkdir("/ordner"); err != nil {
 		t.Fatal(err)

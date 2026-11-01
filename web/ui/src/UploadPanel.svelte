@@ -70,12 +70,12 @@
               <span class="name">{verify.running ? `Prüfung: ${verify.current}` : 'Prüfung abgeschlossen'}</span>
               <button class="icon sm" aria-label={verify.running ? 'Prüfung abbrechen' : 'Ausblenden'} onclick={stopVerify}><Icon name="close" size={12} /></button>
             </div>
-            <progress max="100" value={pct(verify.bytesDone, verify.bytesTotal)}></progress>
+            <progress max="100" value={verify.bytesTotal > 0 ? pct(verify.bytesDone, verify.bytesTotal) : pct(verify.done, verify.total)}></progress>
             {#if verify.running}
-              <small>{verify.done} von {verify.total} Dateien · {line('verify', verify.bytesDone, verify.bytesTotal, 'Geladen')}</small>
+              <small>{verify.done} von {verify.total} Dateien{verify.bytesTotal > 0 ? ` · ${line('verify', verify.bytesDone, verify.bytesTotal, 'Geladen')}` : ''}</small>
             {:else}
               <small class:bad={verify.bad?.length}>
-                {verify.done} geprüft, {verify.bad?.length ?? 0} beschädigt, {verify.failed?.length ?? 0} nicht prüfbar
+                {verify.done} geprüft, {verify.bad?.length ?? 0} fehlen oder beschädigt, {verify.failed?.length ?? 0} nicht prüfbar
               </small>
             {/if}
           </li>

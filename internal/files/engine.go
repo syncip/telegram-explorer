@@ -17,6 +17,7 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,11 @@ const (
 	PartSize = 1 << 20
 	// DefaultBlockParts makes blocks 1 GiB large.
 	DefaultBlockParts = 1024
+	// MinBlockMiB and MaxBlockMiB limit the configurable block size. The upper
+	// end is what Telegram accepts per document on a free account.
+	MinBlockMiB  = 16
+	MaxBlockMiB  = 2000
+	blockSetting = "block_mib"
 	// DirectLimit is the largest file Telegram keeps as a single document on a
 	// free account. Unencrypted files up to here stay directly downloadable.
 	DirectLimit = 2000 << 20
@@ -56,6 +62,9 @@ type Backend interface {
 	// ReadPart returns up to PartSize bytes from offset part*PartSize. Only the
 	// last part of a blob may be shorter.
 	ReadPart(ctx context.Context, msgID int, part int64) ([]byte, error)
+	// Sizes returns the stored size of every message that still exists. It
+	// transfers no file content.
+	Sizes(ctx context.Context, msgIDs []int) (map[int]int64, error)
 	Delete(ctx context.Context, msgIDs []int) error
 }
 
@@ -274,11 +283,27 @@ type layout struct {
 	blocks     int
 }
 
+// BlockMiB returns the block size for new uploads. A part is one MiB, so this
+// is also the number of parts per block.
+func (e *Engine) BlockMiB() int {
+	raw, _ := e.Store.Setting(blockSetting)
+	if n, err := strconv.Atoi(string(raw)); err == nil && n > 0 {
+		return n
+	}
+	return e.BlockParts
+}
+
+// SetBlockMiB changes the block size for new uploads.
+func (e *Engine) SetBlockMiB(n int) error {
+	return e.Store.SetSetting(blockSetting, []byte(strconv.Itoa(n)))
+}
+
 func (e *Engine) layoutOf(size int64, encrypted bool) layout {
-	l := layout{segPlain: PartSize, blockParts: int64(e.BlockParts)}
+	parts := int64(e.BlockMiB())
+	l := layout{segPlain: PartSize, blockParts: parts}
 	if encrypted {
 		l.segPlain = vault.SegmentPlain
-	} else if size <= DirectLimit && size <= int64(e.BlockParts)*2*PartSize {
+	} else if size <= DirectLimit && size <= parts*2*PartSize {
 		// Keep it one message so it stays a normal file in Telegram.
 		l.blockParts = max(1, ceilDiv(size, PartSize))
 	}
@@ -299,6 +324,11 @@ func (e *Engine) upload(ctx context.Context, n *store.Node) error {
 		return err
 	}
 	l := e.layoutOf(n.Size, n.Encrypted)
+	if len(done) > 0 {
+		// A resumed upload keeps the size it started with.
+		l.blockParts = ceilDiv(done[0].Size, PartSize)
+		l.blocks = int(ceilDiv(ceilDiv(n.Size, l.segPlain), l.blockParts))
+	}
 	var fc *vault.FileCipher
 	if n.Encrypted {
 		v := e.Vault()
