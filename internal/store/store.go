@@ -866,6 +866,20 @@ func (s *Store) Shares() ([]*Share, error) {
 	return out, nil
 }
 
+// UpdateShare saves a changed link. token is the one it had so far, because
+// sh may carry a new one.
+func (s *Store) UpdateShare(token string, sh *Share) error {
+	res, err := s.db.Exec(`UPDATE shares SET token = ?, password_hash = ?, expires_at = ?, max_downloads = ? WHERE token = ?`,
+		sh.Token, sh.PasswordHash, sh.ExpiresAt, sh.MaxDownloads, token)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // DeleteShare removes a link.
 func (s *Store) DeleteShare(token string) error {
 	_, err := s.db.Exec(`DELETE FROM shares WHERE token = ?`, token)

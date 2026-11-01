@@ -560,12 +560,15 @@ func (s *Server) listShares(w http.ResponseWriter, r *http.Request) error {
 	return writeJSON(w, list)
 }
 
+// maxShareMinutes is 100 years.
+const maxShareMinutes = 100 * 365 * 24 * 60
+
 func (s *Server) createShare(w http.ResponseWriter, r *http.Request) error {
 	var in struct {
-		NodeID       int64
-		Password     string
-		ExpiresHours int
-		MaxDownloads int
+		NodeID         int64
+		Password       string
+		ExpiresMinutes int
+		MaxDownloads   int
 	}
 	if err := readJSON(r, &in); err != nil {
 		return err
@@ -573,7 +576,7 @@ func (s *Server) createShare(w http.ResponseWriter, r *http.Request) error {
 	if in.NodeID == store.RootID {
 		return badRequest("der Stammordner kann nicht geteilt werden")
 	}
-	if in.ExpiresHours < 0 || in.MaxDownloads < 0 {
+	if in.ExpiresMinutes < 0 || in.ExpiresMinutes > maxShareMinutes || in.MaxDownloads < 0 {
 		return badRequest("ungültige Werte")
 	}
 	target, err := s.Engine.Store.Get(in.NodeID)
@@ -581,8 +584,8 @@ func (s *Server) createShare(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	sh := &store.Share{Token: auth.Token(24), NodeID: in.NodeID, MaxDownloads: in.MaxDownloads}
-	if in.ExpiresHours > 0 {
-		sh.ExpiresAt = time.Now().Add(time.Duration(in.ExpiresHours) * time.Hour).Unix()
+	if in.ExpiresMinutes > 0 {
+		sh.ExpiresAt = time.Now().Add(time.Duration(in.ExpiresMinutes) * time.Minute).Unix()
 	}
 	if in.Password != "" {
 		hash, err := auth.HashPassword(in.Password)
@@ -595,6 +598,65 @@ func (s *Server) createShare(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	s.Engine.Store.Log(store.LevelInfo, store.KindShare, "Freigabe für „%s“ erstellt", target.Name)
+	return writeJSON(w, map[string]string{"token": sh.Token})
+}
+
+// updateShare changes a link. Fields left out stay as they are, a lifetime
+// counts from now and an empty password removes it.
+func (s *Server) updateShare(w http.ResponseWriter, r *http.Request) error {
+	var in struct {
+		Password       *string
+		ExpiresMinutes *int
+		MaxDownloads   *int
+		NewLink        bool
+	}
+	if err := readJSON(r, &in); err != nil {
+		return err
+	}
+	token := r.PathValue("token")
+	sh, err := s.Engine.Store.Share(token)
+	if err != nil {
+		return err
+	}
+	if in.ExpiresMinutes != nil {
+		if *in.ExpiresMinutes < 0 || *in.ExpiresMinutes > maxShareMinutes {
+			return badRequest("ungültige Werte")
+		}
+		sh.ExpiresAt = 0
+		if *in.ExpiresMinutes > 0 {
+			sh.ExpiresAt = time.Now().Add(time.Duration(*in.ExpiresMinutes) * time.Minute).Unix()
+		}
+	}
+	if in.MaxDownloads != nil {
+		if *in.MaxDownloads < 0 {
+			return badRequest("ungültige Werte")
+		}
+		sh.MaxDownloads = *in.MaxDownloads
+	}
+	if in.Password != nil {
+		sh.PasswordHash = ""
+		if *in.Password != "" {
+			if sh.PasswordHash, err = auth.HashPassword(*in.Password); err != nil {
+				return err
+			}
+		}
+	}
+	if in.NewLink {
+		sh.Token = auth.Token(24)
+	}
+	if err := s.Engine.Store.UpdateShare(token, sh); err != nil {
+		return err
+	}
+	if in.Password != nil {
+		// Whoever unlocked the link with the old password has to ask again.
+		s.grants.Range(func(key, _ any) bool {
+			if strings.HasPrefix(key.(string), token+":") {
+				s.grants.Delete(key)
+			}
+			return true
+		})
+	}
+	s.Engine.Store.Log(store.LevelInfo, store.KindShare, "Freigabe für „%s“ geändert", sh.Name)
 	return writeJSON(w, map[string]string{"token": sh.Token})
 }
 

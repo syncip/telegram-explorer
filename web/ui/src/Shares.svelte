@@ -1,9 +1,11 @@
 <script>
   import { api, copyText, formatDate } from './api.js'
   import Icon from './Icon.svelte'
+  import ShareEdit from './ShareEdit.svelte'
 
   let { onerror } = $props()
   let shares = $state(null)
+  let editing = $state(null)
 
   async function load() {
     try {
@@ -47,6 +49,7 @@
             <td>{share.hasPassword ? 'Ja' : 'Nein'}</td>
             <td class="a">
               <button class="icon" title="Link kopieren" aria-label="Link kopieren" onclick={() => copyText(link(share.token)).catch((err) => onerror(err.message))}><Icon name="copy" size={15} /></button>
+              {#if !share.trashed}<button class="secondary end" onclick={() => (editing = share)}>Bearbeiten</button>{/if}
               <button class="secondary end" onclick={() => remove(share.token)}>Freigabe beenden</button>
             </td>
           </tr>
@@ -54,6 +57,10 @@
       </tbody>
     </table>
   </div>
+{/if}
+
+{#if editing}
+  <ShareEdit share={editing} onclose={() => (editing = null)} onsaved={() => { editing = null; load() }} />
 {/if}
 
 <style>

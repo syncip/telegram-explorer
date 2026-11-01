@@ -254,6 +254,80 @@ func TestShareLimits(t *testing.T) {
 	}
 }
 
+func TestUpdateShare(t *testing.T) {
+	e := newEnv(t)
+	e.setup()
+	data := []byte("freigabe")
+	id := e.upload(store.RootID, "bericht.txt", data, true)
+	e.waitReady(id)
+	var share struct{ Token string }
+	json.Unmarshal(e.must("POST", "/api/shares", map[string]any{"nodeId": id, "password": "alt", "expiresMinutes": 5}), &share)
+
+	visitorJar, _ := cookiejar.New(nil)
+	visitor := &env{t: t, srv: e.srv, client: &http.Client{Jar: visitorJar, CheckRedirect: e.client.CheckRedirect}}
+	form := []byte("password=alt")
+	if res, _ := visitor.do("POST", "/s/"+share.Token, form, "Content-Type", "application/x-www-form-urlencoded"); res.StatusCode != http.StatusSeeOther {
+		t.Fatalf("unlock: %d", res.StatusCode)
+	}
+	if res, _ := visitor.do("GET", "/s/"+share.Token+"/dl", nil); res.StatusCode != 200 {
+		t.Fatalf("unlocked download: %d", res.StatusCode)
+	}
+
+	// A changed password locks out whoever knew the old one.
+	e.must("PATCH", "/api/shares/"+share.Token, map[string]any{"password": "neu"})
+	if res, _ := visitor.do("GET", "/s/"+share.Token+"/dl", nil); res.StatusCode != http.StatusSeeOther {
+		t.Fatalf("old unlock still works: %d", res.StatusCode)
+	}
+
+	listed := func(token string) (found struct {
+		Token       string
+		HasPassword bool
+		ExpiresAt   int64
+	}) {
+		var list []struct {
+			Token       string
+			HasPassword bool
+			ExpiresAt   int64
+		}
+		json.Unmarshal(e.must("GET", "/api/shares", nil), &list)
+		for _, sh := range list {
+			if sh.Token == token {
+				found = sh
+			}
+		}
+		return found
+	}
+
+	// A new lifetime counts from now, untouched fields stay.
+	e.must("PATCH", "/api/shares/"+share.Token, map[string]any{"expiresMinutes": 60})
+	if got := listed(share.Token); !got.HasPassword || got.ExpiresAt < time.Now().Add(59*time.Minute).Unix() {
+		t.Fatalf("after new lifetime: %+v", got)
+	}
+	e.must("PATCH", "/api/shares/"+share.Token, map[string]any{"expiresMinutes": 0, "password": ""})
+	if got := listed(share.Token); got.HasPassword || got.ExpiresAt != 0 {
+		t.Fatalf("after removing: %+v", got)
+	}
+
+	var moved struct{ Token string }
+	json.Unmarshal(e.must("PATCH", "/api/shares/"+share.Token, map[string]any{"newLink": true}), &moved)
+	if moved.Token == "" || moved.Token == share.Token {
+		t.Fatalf("new link: %q", moved.Token)
+	}
+	if res, _ := visitor.do("GET", "/s/"+share.Token, nil); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("old link: %d", res.StatusCode)
+	}
+	if res, got := visitor.do("GET", "/s/"+moved.Token, nil); res.StatusCode != 200 || !bytes.Equal(got, data) {
+		t.Fatalf("new link: %d", res.StatusCode)
+	}
+
+	if res, _ := e.do("PATCH", "/api/shares/"+moved.Token, map[string]any{"expiresMinutes": maxShareMinutes + 1}); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("too long: %d", res.StatusCode)
+	}
+	if res, _ := e.do("PATCH", "/api/shares/gibtsnicht", map[string]any{"newLink": true}); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown link: %d", res.StatusCode)
+	}
+}
+
 func TestDirectShare(t *testing.T) {
 	e := newEnv(t)
 	e.setup()

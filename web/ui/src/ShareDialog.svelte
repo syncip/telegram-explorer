@@ -1,11 +1,13 @@
 <script>
   import { copyText, post } from './api.js'
   import Dialog from './Dialog.svelte'
+  import Lifetime from './Lifetime.svelte'
 
   let { node, onclose } = $props()
 
   let password = $state('')
-  let hours = $state(168)
+  let amount = $state(7)
+  let unit = $state(1440)
   let maxDownloads = $state(0)
   let link = $state('')
   let error = $state('')
@@ -15,7 +17,7 @@
     e.preventDefault()
     error = ''
     try {
-      const res = await post('/shares', { nodeId: node.id, password, expiresHours: Number(hours), maxDownloads: Number(maxDownloads) })
+      const res = await post('/shares', { nodeId: node.id, password, expiresMinutes: unit * Number(amount), maxDownloads: Number(maxDownloads) })
       link = `${location.origin}/s/${res.token}`
     } catch (err) {
       error = err.message
@@ -42,15 +44,7 @@
     </div>
   {:else}
     <form onsubmit={create}>
-      <label>Gültig für
-        <select bind:value={hours}>
-          <option value={1}>1 Stunde</option>
-          <option value={24}>1 Tag</option>
-          <option value={168}>7 Tage</option>
-          <option value={720}>30 Tage</option>
-          <option value={0}>Unbegrenzt</option>
-        </select>
-      </label>
+      <Lifetime bind:amount bind:unit />
       <label>Kennwort (optional)<input type="password" bind:value={password} autocomplete="new-password" /></label>
       <label>Maximale Downloads (0 = unbegrenzt)<input type="number" min="0" bind:value={maxDownloads} /></label>
       {#if maxDownloads > 0}<p class="note">Links mit Limit können abgebrochene Downloads nicht fortsetzen.</p>{/if}

@@ -198,6 +198,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/shares", s.open(s.listShares))
 	mux.HandleFunc("POST /api/shares", s.open(s.createShare))
+	mux.HandleFunc("PATCH /api/shares/{token}", s.open(s.updateShare))
 	mux.HandleFunc("DELETE /api/shares/{token}", s.open(s.deleteShare))
 
 	mux.HandleFunc("GET /api/settings", s.open(s.settings))

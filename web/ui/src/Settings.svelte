@@ -15,6 +15,20 @@
   let sftpCurrent = $state('')
   let sftpPassword = $state('')
   let blockMiB = $state(1024)
+  let totpCurrent = $state('')
+  let tab = $state('general')
+
+  const TABS = [
+    { id: 'general', label: 'Allgemein' },
+    { id: 'storage', label: 'Speicher' },
+    { id: 'security', label: 'Sicherheit' },
+    { id: 'sftp', label: 'SFTP' },
+  ]
+
+  function show(id) {
+    tab = id
+    message = error = ''
+  }
 
   const BLOCK_SIZES = [128, 256, 512, 1024, 2000]
 
@@ -32,7 +46,7 @@
     try {
       await fn()
       message = success
-      current = next = sftpCurrent = sftpPassword = ''
+      current = next = sftpCurrent = sftpPassword = totpCurrent = ''
       await load()
     } catch (err) {
       error = err.message
@@ -60,75 +74,97 @@
     totp = null
     totpCode = ''
   }, 'Zwei-Faktor-Anmeldung ist aktiv.')
+
+  function disableTotp(e) {
+    e.preventDefault()
+    run(() => post('/settings/totp/disable', { current: totpCurrent }), 'Zwei-Faktor-Anmeldung ist aus.')
+  }
 </script>
 
 <Dialog title="Einstellungen" {onclose}>
   {#if info}
-    <section>
-      <h3>Verbindung</h3>
-      <p>Telegram: {app.telegram?.user ?? 'nicht verbunden'}</p>
-    </section>
+    <div class="tabs" role="tablist" aria-label="Bereiche">
+      {#each TABS as t (t.id)}
+        <button role="tab" aria-selected={tab === t.id} class:active={tab === t.id} onclick={() => show(t.id)}>{t.label}</button>
+      {/each}
+    </div>
 
-    <section>
-      <h3>SFTP</h3>
-      <p>{info.sftpEnabled ? `Aktiv, Benutzer „${info.username}“, Port 2222.` : 'Aus, der Port ist geschlossen. Mit einem Kennwort wird SFTP eingeschaltet.'}</p>
-      <form onsubmit={saveSftp}>
-        <label>Aktuelles Web-Kennwort<input type="password" bind:value={sftpCurrent} required autocomplete="current-password" /></label>
-        <label>{info.sftpEnabled ? 'Neues SFTP-Kennwort' : 'SFTP-Kennwort'}<input type="password" bind:value={sftpPassword} required autocomplete="new-password" /></label>
-        <div class="row">
-          <button class="secondary">{info.sftpEnabled ? 'Kennwort ändern' : 'SFTP einschalten'}</button>
-          {#if info.sftpEnabled}<button type="button" class="secondary" disabled={!sftpCurrent} onclick={disableSftp}>SFTP abschalten</button>{/if}
-        </div>
-      </form>
-    </section>
+    <div class="content" role="tabpanel">
+      {#if tab === 'general'}
+        <dl>
+          <dt>Telegram</dt><dd>{app.telegram?.user ?? 'nicht verbunden'}</dd>
+          <dt>Segmentgröße</dt><dd>{info.blockMiB} MiB</dd>
+          <dt>Letztes Backup</dt><dd>{info.backupAt ? new Date(info.backupAt).toLocaleString('de-DE') : 'Noch keines'}</dd>
+          <dt>Zwei-Faktor</dt><dd>{info.totpEnabled ? 'Aktiv' : 'Aus'}</dd>
+          <dt>SFTP</dt><dd>{info.sftpEnabled ? 'Aktiv' : 'Aus'}</dd>
+        </dl>
+      {:else if tab === 'storage'}
+        <section>
+          <h3>Segmentgröße</h3>
+          <p>Größere Dateien werden in Segmente geteilt, jedes ist eine Nachricht bei Telegram. Bei einem Abbruch wird nur das laufende Segment wiederholt.</p>
+          <p>Die Größe gilt für neue Uploads. Unverschlüsselte Dateien bleiben bis zur doppelten Größe am Stück, höchstens bis 2000 MiB.</p>
+          <label>Größe pro Segment
+            <select bind:value={blockMiB} onchange={saveBlocks}>
+              {#if !BLOCK_SIZES.includes(info.blockMiB)}<option value={info.blockMiB}>{info.blockMiB} MiB</option>{/if}
+              {#each BLOCK_SIZES as size}<option value={size}>{size} MiB{size === 1024 ? ' (Standard)' : ''}</option>{/each}
+            </select>
+          </label>
+        </section>
 
-    <section>
-      <h3>Segmentgröße</h3>
-      <p>Größere Dateien werden in Segmente dieser Größe geteilt, jedes Segment ist eine Nachricht bei Telegram. Bei einem Abbruch wird nur das laufende Segment wiederholt. Die Größe gilt für neue Uploads, gespeicherte Dateien bleiben wie sie sind.</p>
-      <p>Unverschlüsselte Dateien bleiben bis zur doppelten Segmentgröße am Stück, höchstens bis 2000 MiB.</p>
-      <label>Größe pro Segment
-        <select bind:value={blockMiB} onchange={saveBlocks}>
-          {#if !BLOCK_SIZES.includes(info.blockMiB)}<option value={info.blockMiB}>{info.blockMiB} MiB</option>{/if}
-          {#each BLOCK_SIZES as size}<option value={size}>{size} MiB{size === 1024 ? ' (Standard)' : ''}</option>{/each}
-        </select>
-      </label>
-    </section>
+        <section>
+          <h3>Backup der Metadaten</h3>
+          <p>{info.backupAt ? `Letztes Backup: ${new Date(info.backupAt).toLocaleString('de-DE')}` : 'Noch kein Backup'}. Backups liegen verschlüsselt im Speicherkanal.</p>
+          <button class="secondary" onclick={() => run(() => post('/backup'), 'Backup wurde gespeichert.')}>Jetzt sichern</button>
+        </section>
+      {:else if tab === 'security'}
+        <section>
+          <h3>Zugangsdaten ändern</h3>
+          <form onsubmit={saveCredential}>
+            <label>Was ändern?
+              <select bind:value={target}>
+                <option value="password">Web-Kennwort</option>
+                <option value="passphrase">Passphrase der Verschlüsselung</option>
+              </select>
+            </label>
+            <label>Aktuelles Web-Kennwort<input type="password" bind:value={current} required autocomplete="current-password" /></label>
+            <label>Neuer Wert<input type="password" bind:value={next} required autocomplete="new-password" /></label>
+            <button class="secondary">Speichern</button>
+          </form>
+        </section>
 
-    <section>
-      <h3>Zugangsdaten ändern</h3>
-      <form onsubmit={saveCredential}>
-        <label>Was ändern?
-          <select bind:value={target}>
-            <option value="password">Web-Kennwort</option>
-            <option value="passphrase">Passphrase der Verschlüsselung</option>
-          </select>
-        </label>
-        <label>Aktuelles Web-Kennwort<input type="password" bind:value={current} required autocomplete="current-password" /></label>
-        <label>Neuer Wert<input type="password" bind:value={next} required autocomplete="new-password" /></label>
-        <button class="secondary">Speichern</button>
-      </form>
-    </section>
-
-    <section>
-      <h3>Zwei-Faktor-Anmeldung</h3>
-      {#if info.totpEnabled}
-        <p>Aktiv. Zum Abschalten aktuelles Web-Kennwort oben eintragen.</p>
-        <button class="secondary" onclick={() => run(() => post('/settings/totp/disable', { current }), 'Zwei-Faktor-Anmeldung ist aus.')}>Abschalten</button>
-      {:else if totp}
-        <p>Trage diesen Schlüssel in deine Authenticator-App ein:</p>
-        <code>{totp.secret}</code>
-        <label>Code aus der App<input bind:value={totpCode} inputmode="numeric" autocomplete="one-time-code" /></label>
-        <button class="secondary" onclick={confirmTotp}>Bestätigen</button>
+        <section>
+          <h3>Zwei-Faktor-Anmeldung</h3>
+          {#if info.totpEnabled}
+            <p>Aktiv.</p>
+            <form onsubmit={disableTotp}>
+              <label>Aktuelles Web-Kennwort<input type="password" bind:value={totpCurrent} required autocomplete="current-password" /></label>
+              <button class="secondary">Abschalten</button>
+            </form>
+          {:else if totp}
+            <p>Trage diesen Schlüssel in deine Authenticator-App ein:</p>
+            <code>{totp.secret}</code>
+            <label>Code aus der App<input bind:value={totpCode} inputmode="numeric" autocomplete="one-time-code" /></label>
+            <button class="secondary" onclick={confirmTotp}>Bestätigen</button>
+          {:else}
+            <p>Aus. Bei der Anmeldung wird nur das Kennwort abgefragt.</p>
+            <button class="secondary" onclick={beginTotp}>Einrichten</button>
+          {/if}
+        </section>
       {:else}
-        <button class="secondary" onclick={beginTotp}>Einrichten</button>
+        <section>
+          <h3>SFTP</h3>
+          <p>{info.sftpEnabled ? `Aktiv, Benutzer „${info.username}“, Port 2222.` : 'Aus, der Port ist geschlossen. Mit einem Kennwort wird SFTP eingeschaltet.'}</p>
+          <form onsubmit={saveSftp}>
+            <label>Aktuelles Web-Kennwort<input type="password" bind:value={sftpCurrent} required autocomplete="current-password" /></label>
+            <label>{info.sftpEnabled ? 'Neues SFTP-Kennwort' : 'SFTP-Kennwort'}<input type="password" bind:value={sftpPassword} required autocomplete="new-password" /></label>
+            <div class="row">
+              <button class="secondary">{info.sftpEnabled ? 'Kennwort ändern' : 'SFTP einschalten'}</button>
+              {#if info.sftpEnabled}<button type="button" class="secondary" disabled={!sftpCurrent} onclick={disableSftp}>SFTP abschalten</button>{/if}
+            </div>
+          </form>
+        </section>
       {/if}
-    </section>
-
-    <section>
-      <h3>Backup der Metadaten</h3>
-      <p>{info.backupAt ? `Letztes Backup: ${new Date(info.backupAt).toLocaleString('de-DE')}` : 'Noch kein Backup'}. Backups liegen verschlüsselt im Speicherkanal.</p>
-      <button class="secondary" onclick={() => run(() => post('/backup'), 'Backup wurde gespeichert.')}>Jetzt sichern</button>
-    </section>
+    </div>
 
     {#if message}<p class="ok" role="status">{message}</p>{/if}
     {#if error}<p class="err" role="alert">{error}</p>{/if}
@@ -136,6 +172,41 @@
 </Dialog>
 
 <style>
+  .tabs {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .tabs button {
+    padding: 6px 10px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .tabs button.active {
+    color: var(--text);
+    border-bottom-color: var(--accent);
+    font-weight: 600;
+  }
+  .content {
+    min-height: 230px;
+  }
+  dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 8px 16px;
+    margin: 0;
+  }
+  dt {
+    color: var(--muted);
+  }
+  dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
   section {
     padding: 12px 0;
     border-top: 1px solid var(--line);
