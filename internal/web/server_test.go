@@ -1,0 +1,379 @@
+package web
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/cookiejar"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"testing/fstest"
+	"time"
+
+	"github.com/pkg/sftp"
+	"golang.org/x/crypto/ssh"
+
+	"telegram-explorer/internal/auth"
+	"telegram-explorer/internal/files"
+	"telegram-explorer/internal/sftpd"
+	"telegram-explorer/internal/store"
+)
+
+type env struct {
+	t      *testing.T
+	srv    *httptest.Server
+	client *http.Client
+	engine *files.Engine
+	auth   *auth.Manager
+}
+
+func newEnv(t *testing.T) *env {
+	t.Helper()
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "meta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	backend, err := files.NewLocalBackend(filepath.Join(dir, "blobs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine, err := files.New(st, backend, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	manager := auth.New(st)
+	s := &Server{Engine: engine, Auth: manager, SetupCode: "code", UI: fstest.MapFS{"index.html": {Data: []byte("ui")}},
+		OnUnlock: func() { engine.Start(ctx) }}
+	srv := httptest.NewServer(s.Handler())
+	t.Cleanup(srv.Close)
+	jar, _ := cookiejar.New(nil)
+	return &env{t: t, srv: srv, client: &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, engine: engine, auth: manager}
+}
+
+func (e *env) do(method, path string, body any, headers ...string) (*http.Response, []byte) {
+	e.t.Helper()
+	var reader io.Reader
+	switch b := body.(type) {
+	case nil:
+	case []byte:
+		reader = bytes.NewReader(b)
+	default:
+		raw, _ := json.Marshal(b)
+		reader = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequest(method, e.srv.URL+path, reader)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	req.Header.Set("X-Telex", "1")
+	for i := 0; i+1 < len(headers); i += 2 {
+		req.Header.Set(headers[i], headers[i+1])
+	}
+	res, err := e.client.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer res.Body.Close()
+	data, _ := io.ReadAll(res.Body)
+	return res, data
+}
+
+func (e *env) must(method, path string, body any, headers ...string) []byte {
+	e.t.Helper()
+	res, data := e.do(method, path, body, headers...)
+	if res.StatusCode >= 300 {
+		e.t.Fatalf("%s %s: %d %s", method, path, res.StatusCode, data)
+	}
+	return data
+}
+
+func (e *env) setup() {
+	e.t.Helper()
+	e.must("POST", "/api/setup", map[string]string{"setupCode": "code", "username": "martin", "password": "kennwort123", "passphrase": "passphrase123"})
+}
+
+// upload sends a file in two chunks and returns the node id.
+func (e *env) upload(parent int64, name string, data []byte, encrypted bool) int64 {
+	e.t.Helper()
+	var created struct{ ID string }
+	raw := e.must("POST", "/api/uploads", map[string]any{"parentId": parent, "name": name, "size": len(data), "encrypted": encrypted})
+	json.Unmarshal(raw, &created)
+	half := len(data) / 2
+	e.must("PATCH", "/api/uploads/"+created.ID, data[:half], "X-Upload-Offset", "0")
+	var done struct {
+		Node struct{ ID int64 }
+	}
+	raw = e.must("PATCH", "/api/uploads/"+created.ID, data[half:], "X-Upload-Offset", fmt.Sprint(half))
+	json.Unmarshal(raw, &done)
+	return done.Node.ID
+}
+
+func (e *env) waitReady(id int64) {
+	e.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		n, err := e.engine.Store.Get(id)
+		if err == nil && n.State == store.StateReady {
+			return
+		}
+		e.engine.Wake()
+		time.Sleep(10 * time.Millisecond)
+	}
+	e.t.Fatalf("node %d not ready", id)
+}
+
+func TestAccessRules(t *testing.T) {
+	e := newEnv(t)
+	if res, _ := e.do("GET", "/api/nodes/1/children", nil); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no session: %d", res.StatusCode)
+	}
+	if res, _ := e.do("POST", "/api/setup", map[string]string{"setupCode": "falsch", "username": "x", "password": "kennwort123", "passphrase": "passphrase123"}); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("wrong setup code: %d", res.StatusCode)
+	}
+	e.setup()
+	if res, _ := e.do("POST", "/api/setup", map[string]string{"setupCode": "code", "username": "x", "password": "kennwort123", "passphrase": "passphrase123"}); res.StatusCode != http.StatusConflict {
+		t.Fatalf("second setup: %d", res.StatusCode)
+	}
+	req, _ := http.NewRequest("POST", e.srv.URL+"/api/nodes/1/mkdir", strings.NewReader(`{"name":"x"}`))
+	res, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing CSRF header: %d", res.StatusCode)
+	}
+}
+
+func TestLockAfterRestart(t *testing.T) {
+	e := newEnv(t)
+	e.setup()
+	e.engine.SetVault(nil)
+	if res, _ := e.do("GET", "/api/nodes/1/children", nil); res.StatusCode != http.StatusLocked {
+		t.Fatalf("locked vault: %d", res.StatusCode)
+	}
+	if res, _ := e.do("POST", "/api/unlock", map[string]string{"passphrase": "falsch"}); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong passphrase: %d", res.StatusCode)
+	}
+	e.must("POST", "/api/unlock", map[string]string{"passphrase": "passphrase123"})
+	e.must("GET", "/api/nodes/1/children", nil)
+}
+
+func TestLoginLockout(t *testing.T) {
+	e := newEnv(t)
+	e.setup()
+	var last int
+	for range 8 {
+		res, _ := e.do("POST", "/api/login", map[string]string{"username": "martin", "password": "falsch"})
+		last = res.StatusCode
+	}
+	if last != http.StatusTooManyRequests {
+		t.Fatalf("status %d", last)
+	}
+}
+
+func TestUploadDownloadRange(t *testing.T) {
+	e := newEnv(t)
+	e.setup()
+	data := make([]byte, 3<<20)
+	rand.Read(data)
+	id := e.upload(store.RootID, "video.mp4", data, true)
+	e.waitReady(id)
+
+	if got := e.must("GET", fmt.Sprintf("/api/nodes/%d/content", id), nil); !bytes.Equal(got, data) {
+		t.Fatal("download differs")
+	}
+	res, got := e.do("GET", fmt.Sprintf("/api/nodes/%d/content", id), nil, "Range", "bytes=2097000-2097999")
+	if res.StatusCode != http.StatusPartialContent || !bytes.Equal(got, data[2097000:2098000]) {
+		t.Fatalf("range: %d", res.StatusCode)
+	}
+	if res, _ := e.do("POST", "/api/uploads", map[string]any{"parentId": 1, "name": "video.mp4", "size": 1}); res.StatusCode != http.StatusConflict {
+		t.Fatalf("conflict: %d", res.StatusCode)
+	}
+}
+
+func TestHTMLIsNeverServedInline(t *testing.T) {
+	e := newEnv(t)
+	e.setup()
+	id := e.upload(store.RootID, "evil.html", []byte("<script>alert(1)</script>"), true)
+	res, _ := e.do("GET", fmt.Sprintf("/api/nodes/%d/content?inline=1", id), nil)
+	if !strings.HasPrefix(res.Header.Get("Content-Disposition"), "attachment") || strings.Contains(res.Header.Get("Content-Type"), "html") {
+		t.Fatalf("headers: %v", res.Header)
+	}
+}
+
+func TestShareLimits(t *testing.T) {
+	e := newEnv(t)
+	e.setup()
+	data := []byte("geteilte Datei")
+	id := e.upload(store.RootID, "a.txt", data, true)
+	e.waitReady(id)
+
+	var share struct{ Token string }
+	json.Unmarshal(e.must("POST", "/api/shares", map[string]any{"nodeId": id, "password": "geheim", "maxDownloads": 1}), &share)
+
+	visitorJar, _ := cookiejar.New(nil)
+	visitor := &env{t: t, srv: e.srv, client: &http.Client{Jar: visitorJar, CheckRedirect: e.client.CheckRedirect}}
+
+	if res, _ := visitor.do("GET", "/s/"+share.Token+"/dl", nil); res.StatusCode != http.StatusSeeOther {
+		t.Fatalf("without password: %d", res.StatusCode)
+	}
+	form := []byte("password=falsch")
+	if _, body := visitor.do("POST", "/s/"+share.Token, form, "Content-Type", "application/x-www-form-urlencoded"); !strings.Contains(string(body), "falsch") {
+		t.Fatal("wrong password accepted")
+	}
+	form = []byte("password=geheim")
+	if res, _ := visitor.do("POST", "/s/"+share.Token, form, "Content-Type", "application/x-www-form-urlencoded"); res.StatusCode != http.StatusSeeOther {
+		t.Fatalf("password: %d", res.StatusCode)
+	}
+	// A range request must not dodge the download limit.
+	if res, got := visitor.do("GET", "/s/"+share.Token+"/dl", nil, "Range", "bytes=1-"); res.StatusCode != 200 || !bytes.Equal(got, data) {
+		t.Fatalf("first download: %d %q", res.StatusCode, got)
+	}
+	if res, _ := visitor.do("GET", "/s/"+share.Token+"/dl", nil); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("over the limit: %d", res.StatusCode)
+	}
+
+	e.must("POST", "/api/delete", map[string]any{"ids": []int64{id}})
+	if res, _ := visitor.do("GET", "/s/"+share.Token, nil); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("trashed: %d", res.StatusCode)
+	}
+}
+
+func TestNameValidation(t *testing.T) {
+	e := newEnv(t)
+	e.setup()
+	for _, name := range []string{"..", "a/b", `a\b`, ""} {
+		if res, _ := e.do("POST", "/api/nodes/1/mkdir", map[string]string{"name": name}); res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("name %q: %d", name, res.StatusCode)
+		}
+	}
+}
+
+func TestSFTP(t *testing.T) {
+	e := newEnv(t)
+	e.setup()
+	hash, _ := auth.HashPassword("sftp-kennwort")
+	user, _ := e.auth.User()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := l.Addr().String()
+	l.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server := &sftpd.Server{Addr: addr, Engine: e.engine, Auth: e.auth}
+	go server.Run(ctx)
+
+	dial := func(password string) (*ssh.Client, error) {
+		var conn *ssh.Client
+		var err error
+		for range 50 {
+			conn, err = ssh.Dial("tcp", addr, &ssh.ClientConfig{User: "martin", Auth: []ssh.AuthMethod{ssh.Password(password)}, HostKeyCallback: ssh.InsecureIgnoreHostKey()})
+			var opErr *net.OpError
+			if !errors.As(err, &opErr) {
+				return conn, err
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		return conn, err
+	}
+
+	if _, err := dial("sftp-kennwort"); err == nil {
+		t.Fatal("SFTP must stay closed until a password is set")
+	}
+	user.SFTP = hash
+	e.auth.Save(user)
+	e.auth.Limiter.Success("sftp:127.0.0.1")
+
+	conn, err := dial("sftp-kennwort")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	client, err := sftp.NewClient(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	if err := client.Mkdir("/ordner"); err != nil {
+		t.Fatal(err)
+	}
+	data := make([]byte, 5<<20)
+	rand.Read(data)
+	w, err := client.Create("/ordner/datei.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	folder, err := e.engine.Store.Child(store.RootID, "ordner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := e.engine.Store.Child(folder.ID, "datei.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !node.Encrypted {
+		t.Fatal("SFTP uploads must follow the encrypted default")
+	}
+	e.waitReady(node.ID)
+
+	r, err := client.Open("/ordner/datei.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(r)
+	r.Close()
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("read back: %v, %d bytes", err, len(got))
+	}
+	infos, err := client.ReadDir("/ordner")
+	if err != nil || len(infos) != 1 || infos[0].Size() != int64(len(data)) {
+		t.Fatalf("readdir: %v %v", infos, err)
+	}
+	if err := client.Rename("/ordner/datei.bin", "/umbenannt.bin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Remove("/umbenannt.bin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RemoveDirectory("/ordner"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Stat("/ordner"); err == nil {
+		t.Fatal("folder still exists")
+	}
+
+	// A folder can opt out of encryption, for SFTP as well.
+	plain, _ := e.engine.Store.Mkdir(store.RootID, "offen")
+	e.engine.Store.SetPolicy(plain.ID, store.PolicyPlain)
+	w, _ = client.Create("/offen/klar.txt")
+	w.Write([]byte("hallo"))
+	w.Close()
+	n, err := e.engine.Store.Child(plain.ID, "klar.txt")
+	if err != nil || n.Encrypted {
+		t.Fatalf("plain folder: %+v %v", n, err)
+	}
+}
