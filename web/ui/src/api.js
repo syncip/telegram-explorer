@@ -66,6 +66,16 @@ export function kindOf(node) {
   return KINDS.find(([, re]) => re.test(node.name))?.[0] ?? 'file'
 }
 
+export function stateLabel(node) {
+  if (node.isDir) return ''
+  if (node.state === 'pending') return 'Wird übertragen'
+  if (node.state === 'failed') return 'Fehlgeschlagen'
+  if (node.verifyStatus === 'ok') return `Geprüft am ${formatDate(node.verifiedAt)}`
+  if (node.verifyStatus === 'bad') return 'Beschädigt'
+  if (node.verifyStatus === 'error') return 'Prüfung nicht möglich'
+  return 'Nicht geprüft'
+}
+
 export function typeLabel(node) {
   if (node.isDir) return 'Dateiordner'
   const labels = { image: 'Bild', video: 'Video', audio: 'Audio', archive: 'Archiv', pdf: 'PDF-Dokument', doc: 'Dokument', code: 'Quelltext' }

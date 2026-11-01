@@ -149,7 +149,7 @@ func (c *Client) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		log.Printf("telegram: Verbindung getrennt: %v", err)
+		c.Store.Log(store.LevelWarn, store.KindTelegram, "Verbindung getrennt: %v", err)
 		c.setStatus(Status{Step: StepConnecting, Error: fmt.Sprint(err)})
 		if time.Since(started) > time.Minute {
 			delay = time.Second
@@ -198,6 +198,7 @@ func (c *Client) finishLogin(ctx context.Context, user *tg.User) error {
 		name += " (@" + user.Username + ")"
 	}
 	c.setStatus(Status{Step: StepReady, User: name})
+	c.Store.Log(store.LevelInfo, store.KindTelegram, "Verbunden als %s", name)
 	return nil
 }
 
@@ -426,11 +427,11 @@ func sentMessage(res tg.UpdatesClass) *tg.Message {
 func documentOf(msg *tg.Message) (*tg.Document, error) {
 	media, ok := msg.Media.(*tg.MessageMediaDocument)
 	if !ok {
-		return nil, fmt.Errorf("Nachricht %d enthält kein Dokument", msg.ID)
+		return nil, fmt.Errorf("Nachricht %d enthält kein Dokument: %w", msg.ID, files.ErrMissing)
 	}
 	doc, ok := media.Document.(*tg.Document)
 	if !ok {
-		return nil, fmt.Errorf("Nachricht %d: Dokument nicht mehr vorhanden", msg.ID)
+		return nil, fmt.Errorf("Nachricht %d: %w", msg.ID, files.ErrMissing)
 	}
 	return doc, nil
 }
@@ -469,7 +470,7 @@ func (c *Client) location(ctx context.Context, api *tg.Client, ch *channelRef, m
 			return c.remember(msgID, doc), nil
 		}
 	}
-	return nil, fmt.Errorf("Nachricht %d fehlt im Speicherkanal", msgID)
+	return nil, fmt.Errorf("Nachricht %d: %w", msgID, files.ErrMissing)
 }
 
 // ReadPart implements files.Backend.

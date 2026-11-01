@@ -1,9 +1,10 @@
 <script>
-  import { api, formatDate, formatSize, kindOf, post, ROOT, typeLabel } from './api.js'
+  import { api, formatDate, formatSize, kindOf, post, ROOT, stateLabel, typeLabel } from './api.js'
   import { addDropped, addFolderInput, enqueue, uploads } from './uploads.svelte.js'
   import Dialog from './Dialog.svelte'
   import FileIcon from './FileIcon.svelte'
   import Icon from './Icon.svelte'
+  import Logs from './Logs.svelte'
   import Preview from './Preview.svelte'
   import Properties from './Properties.svelte'
   import Settings from './Settings.svelte'
@@ -14,7 +15,79 @@
 
   let { app, onlogout } = $props()
 
-  let mode = $state('files') // files | search | trash | shares
+  const COLUMNS = [
+    { key: 'mtime', label: 'Änderungsdatum', width: 150, value: (n) => (mode === 'trash' ? n.trashedAt : n.mtime), text: (n) => formatDate(mode === 'trash' ? n.trashedAt : n.mtime) },
+    { key: 'ctime', label: 'Erstellt', width: 150, value: (n) => n.ctime, text: (n) => formatDate(n.ctime) },
+    { key: 'type', label: 'Typ', width: 125, value: typeLabel, text: typeLabel },
+    { key: 'size', label: 'Größe', width: 95, right: true, value: (n) => n.size, text: (n) => formatSize(n.size) },
+    { key: 'enc', label: 'Verschlüsselung', width: 130, value: (n) => (n.isDir ? '' : n.encrypted ? 'a' : 'b'), text: (n) => (n.isDir ? '' : n.encrypted ? 'Verschlüsselt' : 'Unverschlüsselt') },
+    { key: 'share', label: 'Freigabe', width: 90, value: (n) => (n.shared ? 0 : 1), text: (n) => (n.shared ? 'Geteilt' : '') },
+    { key: 'state', label: 'Zustand', width: 180, value: stateLabel, text: stateLabel },
+    { key: 'files', label: 'Dateien', width: 80, right: true, value: (n) => n.fileCount ?? 0, text: (n) => (n.isDir ? String(n.fileCount ?? 0) : '') },
+    { key: 'segments', label: 'Segmente', width: 90, right: true, value: (n) => n.segments, text: (n) => String(n.segments) },
+    { key: 'md5', label: 'MD5', width: 290, mono: true, value: (n) => n.md5 ?? '', text: (n) => n.md5 ?? '' },
+    { key: 'sha256', label: 'SHA-256', width: 470, mono: true, value: (n) => n.sha256 ?? '', text: (n) => n.sha256 ?? '' },
+  ]
+  const DEFAULT_COLUMNS = ['mtime', 'type', 'size', 'enc', 'state']
+  const NAME_WIDTH = 260
+
+  function readColumns() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('telex-columns'))
+      if (Array.isArray(saved?.visible)) return { visible: saved.visible, widths: saved.widths ?? {} }
+    } catch {}
+    return { visible: DEFAULT_COLUMNS, widths: {} }
+  }
+
+  let columnPrefs = $state(readColumns())
+  let windowWidth = $state(innerWidth)
+  let verify = $state(null)
+  let stats = $state(null)
+
+  function saveColumns() {
+    try {
+      localStorage.setItem('telex-columns', JSON.stringify(columnPrefs))
+    } catch {}
+  }
+
+  function toggleColumn(key) {
+    const on = columnPrefs.visible.includes(key)
+    columnPrefs.visible = on ? columnPrefs.visible.filter((k) => k !== key) : COLUMNS.map((c) => c.key).filter((k) => k === key || columnPrefs.visible.includes(k))
+    saveColumns()
+  }
+
+  const widthOf = (col) => columnPrefs.widths[col.key] ?? col.width
+  const shownColumns = $derived(windowWidth < 760 ? COLUMNS.filter((c) => c.key === 'size') : COLUMNS.filter((c) => columnPrefs.visible.includes(c.key)))
+  const tableWidth = $derived(shownColumns.reduce((sum, c) => sum + widthOf(c), NAME_WIDTH))
+
+  function startResize(e, col) {
+    e.preventDefault()
+    e.stopPropagation()
+    const startX = e.clientX
+    const startWidth = widthOf(col)
+    const move = (ev) => (columnPrefs.widths[col.key] = Math.max(50, startWidth + ev.clientX - startX))
+    const up = () => {
+      removeEventListener('pointermove', move)
+      removeEventListener('pointerup', up)
+      saveColumns()
+    }
+    addEventListener('pointermove', move)
+    addEventListener('pointerup', up)
+  }
+
+  function showColumnMenu(e) {
+    e.preventDefault()
+    e.stopPropagation()
+    const height = COLUMNS.length * 32 + 12
+    menu = {
+      x: Math.min(e.clientX, innerWidth - 228),
+      y: Math.min(e.clientY, innerHeight - height - 8),
+      keep: true,
+      entries: COLUMNS.map((c) => ({ label: c.label, checked: () => columnPrefs.visible.includes(c.key), action: () => toggleColumn(c.key) })),
+    }
+  }
+
+  let mode = $state('files') // files | search | trash | shares | logs
   let currentId = $state(ROOT)
   let path = $state([])
   let items = $state([])
@@ -55,12 +128,7 @@
   }
 
   const sorted = $derived.by(() => {
-    const value = {
-      name: (n) => n.name.toLocaleLowerCase('de'),
-      size: (n) => n.size,
-      mtime: (n) => n.mtime,
-      type: (n) => typeLabel(n),
-    }[sort.key]
+    const value = COLUMNS.find((c) => c.key === sort.key)?.value ?? ((n) => n.name.toLocaleLowerCase('de'))
     return [...items].sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1
       const [x, y] = [value(a), value(b)]
@@ -210,9 +278,23 @@
     modal = { type: 'prompt', title, label, value, action }
   }
 
-  function newFolder() {
+  function newFolder(parent = currentId) {
     ask('Neuer Ordner', 'Name', 'Neuer Ordner', async (name) => {
-      await post(`/nodes/${currentId}/mkdir`, { name })
+      await post(`/nodes/${parent}/mkdir`, { name })
+      await refreshAll()
+    })
+  }
+
+  async function verifyNodes(ids) {
+    await guard(async () => {
+      await post('/verify', { ids })
+      await poll()
+    })
+  }
+
+  async function endShare(node) {
+    await guard(async () => {
+      await api(`/nodes/${node.id}/shares`, { method: 'DELETE' })
       await refreshAll()
     })
   }
@@ -288,7 +370,9 @@
       const many = selected.size > 1
       if (!many) entries.push({ label: 'Öffnen', action: () => open(node), bold: true })
       entries.push({ label: many || node.isDir ? 'Als ZIP herunterladen' : 'Herunterladen', icon: 'download', action: () => download() })
+      entries.push({ label: many ? 'Auswahl prüfen' : node.isDir ? 'Ordner prüfen' : 'Datei prüfen', icon: 'check', action: () => verifyNodes(selection.map((n) => n.id)) })
       if (!many) entries.push({ label: 'Teilen', icon: 'share', action: () => (modal = { type: 'share', node }) })
+      if (!many && node.shared) entries.push({ label: 'Freigabe beenden', icon: 'link', action: () => endShare(node) })
       entries.push({ sep: true })
       entries.push({ label: 'Ausschneiden', icon: 'cut', action: cut })
       if (!many) entries.push({ label: 'Umbenennen', icon: 'rename', action: () => rename(node) })
@@ -298,19 +382,55 @@
         entries.push({ label: 'Eigenschaften', icon: 'info', action: () => (modal = { type: 'props', node }) })
       }
     } else if (mode === 'files') {
-      entries.push({ label: 'Neuer Ordner', icon: 'plus', action: newFolder })
+      entries.push({ label: 'Neuer Ordner', icon: 'plus', action: () => newFolder() })
       entries.push({ label: 'Dateien hochladen', icon: 'upload', action: () => fileInput.click() })
       if (clipboard.length) entries.push({ label: `Einfügen (${clipboard.length})`, icon: 'paste', action: paste })
       entries.push({ sep: true })
+      entries.push({ label: 'Ordner prüfen', icon: 'check', action: () => verifyNodes([currentId]) })
       entries.push({ label: 'Aktualisieren', icon: 'refresh', action: refreshAll })
     }
+    placeMenu(e, entries)
+  }
+
+  function placeMenu(e, entries) {
     if (entries.length === 0) return
     const height = entries.reduce((h, i) => h + (i.sep ? 9 : 32), 12)
     menu = {
       x: Math.min(e.clientX, innerWidth - 228),
-      y: Math.min(e.clientY, innerHeight - height - 8),
+      y: Math.max(8, Math.min(e.clientY, innerHeight - height - 8)),
       entries,
     }
+  }
+
+  function treeMenu(e, node) {
+    e.preventDefault()
+    e.stopPropagation()
+    const root = node.id === ROOT
+    const entries = [
+      { label: 'Öffnen', bold: true, action: () => go(node.id) },
+      { label: 'Neuer Ordner', icon: 'plus', action: () => newFolder(node.id) },
+      { label: 'Als ZIP herunterladen', icon: 'download', action: () => download([node]) },
+      { label: 'Ordner prüfen', icon: 'check', action: () => verifyNodes([node.id]) },
+    ]
+    if (!root) {
+      entries.push({ label: 'Teilen', icon: 'share', action: () => (modal = { type: 'share', node }) })
+      if (node.shared) entries.push({ label: 'Freigabe beenden', icon: 'link', action: () => endShare(node) })
+      entries.push({ sep: true })
+      entries.push({ label: 'Umbenennen', icon: 'rename', action: () => rename(node) })
+      entries.push({ label: 'Löschen', icon: 'trash', danger: true, action: () => remove([node]) })
+    }
+    entries.push({ sep: true })
+    entries.push({ label: 'Eigenschaften', icon: 'info', action: () => (modal = { type: 'props', node }) })
+    placeMenu(e, entries)
+  }
+
+  function navMenu(e) {
+    e.preventDefault()
+    e.stopPropagation()
+    placeMenu(e, [
+      { label: 'Neuer Ordner', icon: 'plus', action: () => newFolder(ROOT) },
+      { label: 'Aktualisieren', icon: 'refresh', action: refreshAll },
+    ])
   }
 
   function onKey(e) {
@@ -411,8 +531,15 @@
   }
 
   let lastJobs = 0
-  async function pollJobs() {
-    const list = await api('/jobs').catch(() => null)
+  let lastVerified = 0
+  async function poll() {
+    const [list, check, st] = await Promise.all([api('/jobs'), api('/verify'), api('/stats')].map((p) => p.catch(() => null)))
+    if (st) stats = st
+    if (check) {
+      verify = check
+      if (check.done !== lastVerified) load()
+      lastVerified = check.done
+    }
     if (!list) return
     jobs = list
     if (list.length !== lastJobs) load()
@@ -421,27 +548,29 @@
 
   $effect(() => {
     load()
-    pollJobs()
-    const timer = setInterval(pollJobs, 2000)
+    poll()
+    const timer = setInterval(poll, 2000)
     return () => clearInterval(timer)
   })
 
   const pendingTotal = $derived(jobs.length + uploads.items.filter((i) => i.state === 'running' || i.state === 'queued').length)
 </script>
 
-<svelte:window onkeydown={onKey} onclick={() => { menu = null; uploadMenu = false }} />
+<svelte:window bind:innerWidth={windowWidth} onkeydown={onKey} onclick={() => { menu = null; uploadMenu = false }} />
 
 <input type="file" multiple hidden bind:this={fileInput} onchange={pickFiles} />
 <input type="file" webkitdirectory hidden bind:this={folderInput} onchange={pickFolder} />
 
-<div class="app">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="app" oncontextmenu={(e) => { if (!e.target.closest('input, textarea')) e.preventDefault() }}>
   <div class="bar toolbar" role="toolbar" aria-label="Aktionen">
     <button class="icon only-narrow" aria-label="Navigation" onclick={(e) => { e.stopPropagation(); navOpen = !navOpen }}><Icon name="menu" /></button>
     {#if mode === 'trash'}
       <button class="tool" disabled={!selection.length} onclick={() => restore()}><Icon name="restore" /><span>Wiederherstellen</span></button>
       <button class="tool" disabled={!selection.length} onclick={() => purge()}><Icon name="trash" /><span>Endgültig löschen</span></button>
-    {:else if mode !== 'shares'}
-      <button class="tool" aria-label="Neuer Ordner" title="Neuer Ordner" disabled={mode !== 'files'} onclick={newFolder}><Icon name="plus" /><span>Neuer Ordner</span></button>
+      <button class="tool" disabled={!items.length} onclick={() => purge(items)}><Icon name="trash" /><span>Papierkorb leeren</span></button>
+    {:else if mode === 'files' || mode === 'search'}
+      <button class="tool" aria-label="Neuer Ordner" title="Neuer Ordner" disabled={mode !== 'files'} onclick={() => newFolder()}><Icon name="plus" /><span>Neuer Ordner</span></button>
       <div class="split">
         <button class="tool" aria-label="Hochladen" title="Hochladen" disabled={mode !== 'files'} onclick={(e) => { e.stopPropagation(); uploadMenu = !uploadMenu }} aria-haspopup="menu" aria-expanded={uploadMenu}>
           <Icon name="upload" /><span>Hochladen</span>
@@ -471,9 +600,14 @@
       <button class="tool" aria-label="Ausschneiden" title="Ausschneiden (Strg+X)" disabled={!selection.length} onclick={cut}><Icon name="cut" /></button>
       <button class="tool" aria-label="Einfügen" title="Einfügen (Strg+V)" disabled={!clipboard.length || mode !== 'files'} onclick={paste}><Icon name="paste" /></button>
       <button class="tool" aria-label="Löschen" title="Löschen (Entf)" disabled={!selection.length} onclick={() => remove()}><Icon name="trash" /></button>
+      <i class="sep"></i>
+      <button class="tool" aria-label="Ordner prüfen" title="Alle Dateien in diesem Ordner prüfen" disabled={mode !== 'files'} onclick={() => verifyNodes([currentId])}><Icon name="check" /><span>Ordner prüfen</span></button>
     {/if}
     <span class="grow"></span>
-    {#if mode !== 'shares'}
+    {#if (mode === 'files' || mode === 'search' || mode === 'trash') && view === 'details' && windowWidth >= 760}
+      <button class="tool" aria-label="Spalten" title="Spalten auswählen" onclick={showColumnMenu}><Icon name="columns" /><span>Spalten</span></button>
+    {/if}
+    {#if mode !== 'shares' && mode !== 'logs'}
       <button class="tool" aria-label="Ansicht wechseln" title={view === 'details' ? 'Große Symbole' : 'Details'} onclick={() => setView(view === 'details' ? 'icons' : 'details')}>
         <Icon name={view === 'details' ? 'grid' : 'list'} />
       </button>
@@ -489,6 +623,8 @@
         <span class="crumb static">Papierkorb</span>
       {:else if mode === 'shares'}
         <span class="crumb static">Freigaben</span>
+      {:else if mode === 'logs'}
+        <span class="crumb static">Protokoll</span>
       {:else if mode === 'search'}
         <span class="crumb static">Suchergebnisse für „{query}“</span>
       {:else}
@@ -513,15 +649,16 @@
   {/if}
 
   <div class="body">
-    <aside class="nav" class:open={navOpen} aria-label="Navigation">
+    <aside class="nav" class:open={navOpen} aria-label="Navigation" oncontextmenu={navMenu}>
       <div class="tree" role="tree" aria-label="Ordner">
         {#if rootNode}
-          <TreeNode node={rootNode} label="Dieser Speicher" currentId={mode === 'files' ? currentId : 0} version={treeVersion} onnavigate={go} ondropnodes={moveTo} startOpen />
+          <TreeNode node={rootNode} label="Dieser Speicher" currentId={mode === 'files' ? currentId : 0} version={treeVersion} onnavigate={go} ondropnodes={moveTo} oncontext={treeMenu} startOpen />
         {/if}
       </div>
       <div class="links">
         <button class:active={mode === 'shares'} onclick={() => setMode('shares')}><Icon name="link" /><span>Freigaben</span></button>
         <button class:active={mode === 'trash'} onclick={() => setMode('trash')}><Icon name="trash" /><span>Papierkorb</span></button>
+        <button class:active={mode === 'logs'} onclick={() => setMode('logs')}><Icon name="list" /><span>Protokoll</span></button>
         <button onclick={() => (modal = { type: 'settings' })}><Icon name="settings" /><span>Einstellungen</span></button>
         <button onclick={logout}><Icon name="logout" /><span>Abmelden</span></button>
       </div>
@@ -539,6 +676,8 @@
     >
       {#if mode === 'shares'}
         <Shares onerror={(m) => (error = m)} />
+      {:else if mode === 'logs'}
+        <Logs onerror={(m) => (error = m)} />
       {:else if items.length === 0}
         <div class="empty">
           {#if mode === 'trash'}
@@ -551,13 +690,17 @@
           {/if}
         </div>
       {:else if view === 'details'}
-        <table>
+        <table style="min-width:{tableWidth}px">
           <thead>
-            <tr>
-              <th class="c-name"><button onclick={() => sortBy('name')}>Name {sort.key === 'name' ? (sort.dir > 0 ? '▲' : '▼') : ''}</button></th>
-              <th class="c-date"><button onclick={() => sortBy('mtime')}>Änderungsdatum {sort.key === 'mtime' ? (sort.dir > 0 ? '▲' : '▼') : ''}</button></th>
-              <th class="c-type"><button onclick={() => sortBy('type')}>Typ {sort.key === 'type' ? (sort.dir > 0 ? '▲' : '▼') : ''}</button></th>
-              <th class="c-size"><button onclick={() => sortBy('size')}>Größe {sort.key === 'size' ? (sort.dir > 0 ? '▲' : '▼') : ''}</button></th>
+            <tr oncontextmenu={showColumnMenu}>
+              <th><button onclick={() => sortBy('name')}>Name {sort.key === 'name' ? (sort.dir > 0 ? '▲' : '▼') : ''}</button></th>
+              {#each shownColumns as col (col.key)}
+                <th class:right={col.right} style="width:{widthOf(col)}px">
+                  <button onclick={() => sortBy(col.key)}>{col.label} {sort.key === col.key ? (sort.dir > 0 ? '▲' : '▼') : ''}</button>
+                  <!-- svelte-ignore a11y_no_static_element_interactions -->
+                  <span class="grip" onpointerdown={(e) => startResize(e, col)}></span>
+                </th>
+              {/each}
             </tr>
           </thead>
           <tbody>
@@ -574,10 +717,15 @@
                 ondragover={(e) => { if (node.isDir && !hasFiles(e)) e.preventDefault() }}
                 ondrop={(e) => dropOnFolder(e, node)}
               >
-                <td class="c-name"><div class="cell"><FileIcon {node} /><span>{node.name}</span></div></td>
-                <td class="c-date">{formatDate(mode === 'trash' ? node.trashedAt : node.mtime)}</td>
-                <td class="c-type">{typeLabel(node)}</td>
-                <td class="c-size">{node.isDir ? '' : formatSize(node.size)}</td>
+                <td class="c-name">
+                  <div class="cell">
+                    <FileIcon {node} /><span class="label">{node.name}</span>
+                    {#if node.shared}<i class="shared" title="Wird geteilt"><Icon name="link" size={14} /></i>{/if}
+                  </div>
+                </td>
+                {#each shownColumns as col (col.key)}
+                  <td class:right={col.right} class:mono={col.mono} class:bad={col.key === 'state' && node.verifyStatus === 'bad'} title={col.text(node)}>{col.text(node)}</td>
+                {/each}
               </tr>
             {/each}
           </tbody>
@@ -600,6 +748,7 @@
             >
               <FileIcon {node} size={56} />
               <span>{node.name}</span>
+              {#if node.shared}<i class="shared corner" title="Wird geteilt"><Icon name="link" size={14} /></i>{/if}
             </button>
           {/each}
         </div>
@@ -616,20 +765,41 @@
       <span>{selection.length} ausgewählt{totalSize ? `, ${formatSize(totalSize)}` : ''}</span>
     {/if}
     <span class="grow"></span>
+    {#if stats}
+      <span
+        class="stats"
+        title="Ordner: {stats.folders} · Verschlüsselt: {stats.encrypted} · Unverschlüsselt: {stats.plain} · Nicht geprüft: {stats.unverified} · Aktive Freigaben: {stats.shares} · Bei Telegram belegt: {formatSize(stats.stored)} · Papierkorb: {stats.trashFiles} Dateien, {formatSize(stats.trashSize)}"
+      >
+        <span>{stats.files} Dateien</span>
+        <span>{stats.segments} Segmente</span>
+        <span>{formatSize(stats.size)}</span>
+        <span>Freigaben: {stats.shares}</span>
+        <span>Papierkorb: {formatSize(stats.trashSize)}</span>
+        <span>Letzter Upload: {stats.lastUpload ? formatDate(stats.lastUpload) : 'noch keiner'}</span>
+        {#if stats.corrupted}<span class="alarm">{stats.corrupted} beschädigt</span>{/if}
+      </span>
+    {/if}
     <span class="tg" title={app.telegram?.user}>{pendingTotal ? `${pendingTotal} Übertragung${pendingTotal === 1 ? '' : 'en'} aktiv` : 'Alles synchron'}</span>
   </footer>
 </div>
 
-<UploadPanel {jobs} />
+<UploadPanel {jobs} {verify} onverifychange={poll} />
 
 {#if menu}
-  <div class="menu" role="menu" style="left:{menu.x}px;top:{menu.y}px">
+  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_interactive_supports_focus -->
+  <div class="menu" role="menu" style="left:{menu.x}px;top:{menu.y}px" onclick={(e) => { if (menu.keep) e.stopPropagation() }}>
     {#each menu.entries as entry, i (i)}
       {#if entry.sep}
         <hr />
       {:else}
         <button role="menuitem" class:danger={entry.danger} class:bold={entry.bold} onclick={entry.action}>
-          <span class="mi">{#if entry.icon}<Icon name={entry.icon} />{/if}</span>{entry.label}
+          <span class="mi">
+            {#if entry.checked}
+              {#if entry.checked()}<Icon name="check" />{/if}
+            {:else if entry.icon}
+              <Icon name={entry.icon} />
+            {/if}
+          </span>{entry.label}
         </button>
       {/if}
     {/each}
@@ -876,6 +1046,49 @@
     color: var(--muted);
     padding: 0;
   }
+  .grip {
+    position: absolute;
+    top: 0;
+    right: -3px;
+    width: 7px;
+    height: 100%;
+    cursor: col-resize;
+    z-index: 2;
+    touch-action: none;
+  }
+  th.right button,
+  td.right {
+    text-align: right;
+  }
+  td.mono {
+    font: 12px Consolas, 'Cascadia Mono', monospace;
+  }
+  td.bad {
+    color: var(--danger);
+    font-weight: 600;
+  }
+  .shared {
+    display: inline-flex;
+    flex: none;
+    color: var(--accent);
+    font-style: normal;
+  }
+  .shared.corner {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+  }
+  .stats {
+    display: flex;
+    gap: 14px;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  .alarm {
+    color: var(--danger);
+    font-weight: 600;
+  }
   th button {
     width: 100%;
     height: 30px;
@@ -891,19 +1104,6 @@
   }
   th button:hover {
     background: var(--hover);
-  }
-  .c-date {
-    width: 150px;
-  }
-  .c-type {
-    width: 130px;
-  }
-  .c-size {
-    width: 100px;
-  }
-  th.c-size button,
-  td.c-size {
-    text-align: right;
   }
   td {
     height: 30px;
@@ -936,7 +1136,7 @@
     gap: 9px;
     min-width: 0;
   }
-  .cell span {
+  .label {
     overflow: hidden;
     text-overflow: ellipsis;
   }
@@ -949,6 +1149,7 @@
     min-height: 100%;
   }
   .tile {
+    position: relative;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -1087,9 +1288,6 @@
     .search {
       width: 150px;
     }
-    .c-type {
-      display: none;
-    }
   }
   @media (max-width: 760px) {
     .only-narrow {
@@ -1108,7 +1306,7 @@
       transform: none;
       visibility: visible;
     }
-    .c-date {
+    .stats span:nth-child(n + 4) {
       display: none;
     }
     .search {

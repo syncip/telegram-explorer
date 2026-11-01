@@ -33,6 +33,9 @@ const (
 // ErrWrongPassphrase is returned when the passphrase cannot unwrap the master key.
 var ErrWrongPassphrase = errors.New("falsche Passphrase")
 
+// ErrCorrupt is returned when stored data fails authentication.
+var ErrCorrupt = errors.New("Daten beschädigt oder manipuliert")
+
 // Header is the public, non-secret part of a vault.
 type Header struct {
 	Salt    []byte `json:"salt"`
@@ -178,7 +181,7 @@ func (c *FileCipher) SealSegment(dst []byte, segment int64, plain []byte) []byte
 func (c *FileCipher) OpenSegment(segment int64, sealed []byte) ([]byte, error) {
 	plain, err := c.aead.Open(nil, nonce(segment), sealed, c.ad[:])
 	if err != nil {
-		return nil, fmt.Errorf("segment %d: Daten beschädigt oder manipuliert", segment)
+		return nil, fmt.Errorf("Segment %d: %w", segment, ErrCorrupt)
 	}
 	return plain, nil
 }

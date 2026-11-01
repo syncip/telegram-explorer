@@ -5,6 +5,7 @@ package files
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -45,6 +46,9 @@ var ErrLocked = errors.New("Tresor ist gesperrt")
 // ErrNotReady is returned while the backend is not connected.
 var ErrNotReady = errors.New("Telegram ist nicht verbunden")
 
+// ErrMissing is returned when a message is gone from the backend.
+var ErrMissing = errors.New("Daten fehlen im Speicherkanal")
+
 // Backend stores opaque blobs as messages.
 type Backend interface {
 	Ready() bool
@@ -64,8 +68,11 @@ type Engine struct {
 
 	vault    atomic.Pointer[vault.Vault]
 	wake     chan struct{}
+	clean    chan struct{}
 	progress sync.Map // node id -> *atomic.Int64
 	started  atomic.Bool
+	verifier verifier
+	ctx      context.Context
 }
 
 // New creates an engine that keeps stage files below dataDir.
@@ -74,7 +81,8 @@ func New(s *store.Store, b Backend, dataDir string) (*Engine, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	return &Engine{Store: s, Backend: b, Dir: dir, BlockParts: DefaultBlockParts, wake: make(chan struct{}, 1)}, nil
+	return &Engine{Store: s, Backend: b, Dir: dir, BlockParts: DefaultBlockParts, ctx: context.Background(),
+		wake: make(chan struct{}, 1), clean: make(chan struct{}, 1)}, nil
 }
 
 // SetVault installs the unlocked vault.
@@ -120,7 +128,7 @@ func (e *Engine) Commit(parent int64, name, stagePath string, encrypted bool, mt
 	if err != nil {
 		return nil, err
 	}
-	sum, err := hashFile(stagePath)
+	sha, md, err := hashFile(stagePath)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +136,7 @@ func (e *Engine) Commit(parent int64, name, stagePath string, encrypted bool, mt
 		mtime = time.Now().Unix()
 	}
 	n := &store.Node{ParentID: parent, Name: name, Size: info.Size(), Mime: MimeOf(name), Encrypted: encrypted,
-		State: store.StatePending, SHA256: sum, StagePath: stagePath, MTime: mtime}
+		State: store.StatePending, SHA256: sha, MD5: md, StagePath: stagePath, MTime: mtime}
 	if n.Size == 0 {
 		n.State, n.StagePath = store.StateReady, ""
 	}
@@ -148,17 +156,17 @@ func (e *Engine) Commit(parent int64, name, stagePath string, encrypted bool, mt
 	return created, nil
 }
 
-func hashFile(path string) (string, error) {
+func hashFile(path string) (sha, md string, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
+	s, m := sha256.New(), md5.New()
+	if _, err := io.Copy(io.MultiWriter(s, m), f); err != nil {
+		return "", "", err
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return hex.EncodeToString(s.Sum(nil)), hex.EncodeToString(m.Sum(nil)), nil
 }
 
 // MimeOf guesses a content type from the file name.
@@ -182,6 +190,7 @@ func (e *Engine) Start(ctx context.Context) {
 	if !e.started.CompareAndSwap(false, true) {
 		return
 	}
+	e.ctx = ctx
 	e.cleanStage()
 	go e.uploadLoop(ctx)
 	go e.janitorLoop(ctx)
@@ -235,17 +244,27 @@ func (e *Engine) runUpload(ctx context.Context, n *store.Node) {
 	err := e.upload(ctx, n)
 	e.progress.Delete(n.ID)
 	switch {
-	case err == nil, ctx.Err() != nil, errors.Is(err, store.ErrNotFound):
+	case err == nil:
+		e.Store.Log(store.LevelInfo, store.KindUpload, "„%s“ zu Telegram übertragen (%s)", n.Name, protection(n))
+	case ctx.Err() != nil, errors.Is(err, store.ErrNotFound):
 	case errors.Is(err, os.ErrNotExist):
 		e.Store.Fail(n.ID, "Zwischenspeicher-Datei fehlt, bitte erneut hochladen")
+		e.Store.Log(store.LevelError, store.KindUpload, "„%s“: Zwischenspeicher-Datei fehlt", n.Name)
 	default:
 		delay := time.Duration(1<<min(n.Attempts, 9)) * 15 * time.Second
 		if delay > time.Hour {
 			delay = time.Hour
 		}
-		log.Printf("upload %d (%s): %v, neuer Versuch in %s", n.ID, n.Name, err, delay)
+		e.Store.Log(store.LevelWarn, store.KindUpload, "„%s“: %v, neuer Versuch in %s", n.Name, err, delay)
 		e.Store.Retry(n.ID, time.Now().Add(delay).Unix(), err.Error())
 	}
+}
+
+func protection(n *store.Node) string {
+	if n.Encrypted {
+		return "verschlüsselt"
+	}
+	return "unverschlüsselt"
 }
 
 // layout describes how a file is cut into blocks.
@@ -406,16 +425,36 @@ func (e *Engine) Jobs() ([]JobInfo, error) {
 }
 
 // Delete moves a node to the trash.
-func (e *Engine) Delete(id int64) error { return e.Store.Trash(id) }
+func (e *Engine) Delete(id int64) error {
+	n, err := e.Store.Get(id)
+	if err != nil {
+		return err
+	}
+	if err := e.Store.Trash(id); err != nil {
+		return err
+	}
+	e.Store.Log(store.LevelInfo, store.KindDelete, "„%s“ in den Papierkorb verschoben", n.Name)
+	return nil
+}
 
-// Purge deletes a trashed node for good.
+// Purge deletes a trashed node for good. The Telegram messages go right away:
+// nobody expects a permanently deleted file to linger until the next cleanup.
 func (e *Engine) Purge(id int64) error {
+	n, err := e.Store.Get(id)
+	if err != nil {
+		return err
+	}
 	stages, err := e.Store.Purge(id)
 	if err != nil {
 		return err
 	}
 	for _, p := range stages {
 		os.Remove(p)
+	}
+	e.Store.Log(store.LevelInfo, store.KindDelete, "„%s“ endgültig gelöscht", n.Name)
+	select {
+	case e.clean <- struct{}{}:
+	default:
 	}
 	return nil
 }
@@ -431,7 +470,7 @@ func (e *Engine) janitorLoop(ctx context.Context) {
 		changes, err := e.Store.Changes()
 		if err == nil && changes != backedUp && time.Since(lastBackup) > 6*time.Hour && e.Backend.Ready() && e.Vault() != nil {
 			if err := e.Backup(ctx); err != nil {
-				log.Printf("backup: %v", err)
+				e.Store.Log(store.LevelError, store.KindSystem, "Backup fehlgeschlagen: %v", err)
 			} else {
 				lastBackup = time.Now()
 				backedUp, _ = e.Store.Changes()
@@ -441,6 +480,7 @@ func (e *Engine) janitorLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case <-e.clean:
 		}
 	}
 }
@@ -468,10 +508,11 @@ func (e *Engine) janitor(ctx context.Context) {
 			return
 		}
 		if err := e.Backend.Delete(ctx, ids); err != nil {
-			log.Printf("delete messages: %v", err)
+			e.Store.Log(store.LevelError, store.KindDelete, "%d Nachricht(en) konnten bei Telegram nicht gelöscht werden: %v", len(ids), err)
 			return
 		}
 		e.Store.RemoveOrphans(ids)
+		e.Store.Log(store.LevelInfo, store.KindDelete, "%d Nachricht(en) bei Telegram gelöscht", len(ids))
 	}
 }
 

@@ -80,9 +80,11 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 			if !s.Auth.CheckSFTP(meta.User(), string(pass)) {
 				s.Auth.Limiter.Fail(key)
+				s.Engine.Store.Log(store.LevelWarn, store.KindLogin, "Fehlgeschlagene SFTP-Anmeldung von %s", hostOf(meta.RemoteAddr()))
 				return nil, auth.ErrInvalid
 			}
 			s.Auth.Limiter.Success(key)
+			s.Engine.Store.Log(store.LevelInfo, store.KindLogin, "SFTP-Anmeldung von %s", hostOf(meta.RemoteAddr()))
 			return &ssh.Permissions{}, nil
 		},
 	}
@@ -204,6 +206,7 @@ func (h *handler) Fileread(r *sftp.Request) (io.ReaderAt, error) {
 	if err != nil {
 		return nil, err
 	}
+	h.e.Store.Log(store.LevelInfo, store.KindDownload, "„%s“ per SFTP geöffnet", n.Name)
 	return h.e.Open(h.ctx, n)
 }
 
@@ -253,7 +256,10 @@ func (w *writer) Close() error {
 		_, w.err = w.h.e.Commit(w.parent, w.name, w.File.Name(), w.encrypted, 0, true)
 		if w.err != nil {
 			os.Remove(w.File.Name())
+			w.h.e.Store.Log(store.LevelError, store.KindUpload, "SFTP-Upload „%s“ fehlgeschlagen: %v", w.name, w.err)
+			return
 		}
+		w.h.e.Store.Log(store.LevelInfo, store.KindUpload, "„%s“ per SFTP hochgeladen", w.name)
 	})
 	return w.err
 }

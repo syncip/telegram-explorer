@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"io/fs"
-	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -101,7 +100,7 @@ func (s *Server) wrap(h handler) http.HandlerFunc {
 		case errors.Is(err, context.Canceled):
 			return
 		default:
-			log.Printf("%s %s: %v", r.Method, r.URL.Path, err)
+			s.Engine.Store.Log(store.LevelError, store.KindSystem, "%s %s: %v", r.Method, r.URL.Path, err)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(code)
@@ -171,8 +170,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/nodes/{id}/content", s.open(s.content))
 	mux.HandleFunc("POST /api/nodes/{id}/mkdir", s.open(s.mkdir))
 	mux.HandleFunc("PATCH /api/nodes/{id}", s.open(s.patchNode))
-	mux.HandleFunc("POST /api/nodes/{id}/verify", s.open(s.verify))
 	mux.HandleFunc("POST /api/nodes/{id}/retry", s.open(s.retry))
+	mux.HandleFunc("DELETE /api/nodes/{id}/shares", s.open(s.endSharesOf))
+	mux.HandleFunc("POST /api/verify", s.open(s.startVerify))
+	mux.HandleFunc("GET /api/verify", s.open(s.verifyState))
+	mux.HandleFunc("DELETE /api/verify", s.open(s.clearVerify))
+	mux.HandleFunc("GET /api/stats", s.open(s.stats))
+	mux.HandleFunc("GET /api/logs", s.open(s.logs))
+	mux.HandleFunc("DELETE /api/logs", s.open(s.clearLogs))
 	mux.HandleFunc("POST /api/move", s.open(s.move))
 	mux.HandleFunc("POST /api/delete", s.open(s.deleteNodes))
 	mux.HandleFunc("GET /api/search", s.open(s.search))
@@ -301,12 +306,14 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) error {
 	token, err := s.Auth.Login(in.Username, in.Password, in.Code)
 	if errors.Is(err, auth.ErrInvalid) {
 		s.Auth.Limiter.Fail(key)
+		s.Engine.Store.Log(store.LevelWarn, store.KindLogin, "Fehlgeschlagene Anmeldung von %s", s.clientIP(r))
 		return httpError{http.StatusUnauthorized, err.Error()}
 	}
 	if err != nil {
 		return err
 	}
 	s.Auth.Limiter.Success(key)
+	s.Engine.Store.Log(store.LevelInfo, store.KindLogin, "Anmeldung von %s", s.clientIP(r))
 	s.sessionCookie(w, r, token, int((7 * 24 * time.Hour).Seconds()))
 	return writeJSON(w, map[string]bool{"ok": true})
 }

@@ -2,8 +2,6 @@ package files
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -231,21 +229,4 @@ func (r *Reader) load(seg int64) ([]byte, error) {
 		return data, nil
 	}
 	return r.cipher.OpenSegment(seg, data)
-}
-
-// Verify downloads a whole file and compares it with the recorded checksum.
-func (e *Engine) Verify(ctx context.Context, n *store.Node) error {
-	r, err := e.Open(ctx, n)
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, r); err != nil {
-		return err
-	}
-	if n.SHA256 != "" && hex.EncodeToString(h.Sum(nil)) != n.SHA256 {
-		return errors.New("Prüfsumme stimmt nicht überein")
-	}
-	return nil
 }

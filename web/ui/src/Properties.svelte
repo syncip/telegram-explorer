@@ -17,10 +17,9 @@
 
   async function verify() {
     busy = true
-    result = 'Datei wird komplett geladen und geprüft'
     try {
-      await post(`/nodes/${node.id}/verify`)
-      result = 'Datei ist vollständig und unverändert.'
+      await post('/verify', { ids: [node.id] })
+      result = 'Prüfung läuft. Fortschritt und Ergebnis stehen bei den Übertragungen und in der Spalte „Zustand“.'
     } catch (err) {
       result = `Prüfung fehlgeschlagen: ${err.message}`
     } finally {
@@ -33,10 +32,14 @@
   <dl>
     <dt>Name</dt><dd>{node.name}</dd>
     <dt>Typ</dt><dd>{typeLabel(node)}</dd>
-    {#if !node.isDir}
+    {#if node.isDir}
+      <dt>Inhalt</dt><dd>{node.fileCount ?? 0} Dateien, {formatSize(node.size)}</dd>
+    {:else}
       <dt>Größe</dt><dd>{formatSize(node.size)}</dd>
       <dt>Schutz</dt><dd>{node.encrypted ? 'Verschlüsselt' : 'Unverschlüsselt, in Telegram lesbar'}</dd>
       <dt>Status</dt><dd>{stateLabels[node.state]}</dd>
+      <dt>Segmente</dt><dd>{node.segments}</dd>
+      {#if node.md5}<dt>MD5</dt><dd class="hash">{node.md5}</dd>{/if}
       {#if node.sha256}<dt>SHA-256</dt><dd class="hash">{node.sha256}</dd>{/if}
     {/if}
     <dt>Geändert</dt><dd>{formatDate(node.mtime)}</dd>

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -249,6 +251,144 @@ func TestShareLimits(t *testing.T) {
 	e.must("POST", "/api/delete", map[string]any{"ids": []int64{id}})
 	if res, _ := visitor.do("GET", "/s/"+share.Token, nil); res.StatusCode != http.StatusNotFound {
 		t.Fatalf("trashed: %d", res.StatusCode)
+	}
+}
+
+func TestEndShareStatsAndLog(t *testing.T) {
+	e := newEnv(t)
+	e.setup()
+	id := e.upload(store.RootID, "a.txt", []byte("inhalt"), true)
+	e.waitReady(id)
+
+	var share struct{ Token string }
+	json.Unmarshal(e.must("POST", "/api/shares", map[string]any{"nodeId": id}), &share)
+	var list []store.Node
+	json.Unmarshal(e.must("GET", "/api/nodes/1/children", nil), &list)
+	if len(list) != 1 || !list[0].Shared || list[0].MD5 == "" || list[0].Segments != 1 {
+		t.Fatalf("listing: %+v", list)
+	}
+
+	e.must("DELETE", "/api/shares/"+share.Token, nil)
+	if res, _ := e.do("GET", "/s/"+share.Token, nil); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("ended share: %d", res.StatusCode)
+	}
+	json.Unmarshal(e.must("POST", "/api/shares", map[string]any{"nodeId": id}), &share)
+	e.must("DELETE", fmt.Sprintf("/api/nodes/%d/shares", id), nil)
+	if res, _ := e.do("GET", "/s/"+share.Token, nil); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("ended by node: %d", res.StatusCode)
+	}
+
+	var stats store.Stats
+	json.Unmarshal(e.must("GET", "/api/stats", nil), &stats)
+	if stats.Files != 1 || stats.Segments != 1 || stats.Size != 6 || stats.LastUpload == 0 || stats.Shares != 0 {
+		t.Fatalf("stats: %+v", stats)
+	}
+
+	var events []store.Event
+	json.Unmarshal(e.must("GET", "/api/logs?kind=share", nil), &events)
+	if len(events) != 4 {
+		t.Fatalf("events: %+v", events)
+	}
+}
+
+func TestFolderVerify(t *testing.T) {
+	e := newEnv(t)
+	e.setup()
+	folder, _ := e.engine.Store.Mkdir(store.RootID, "ordner")
+	good := e.upload(folder.ID, "gut.bin", make([]byte, 3000), true)
+	bad := e.upload(folder.ID, "schlecht.bin", make([]byte, 3000), true)
+	e.waitReady(good)
+	e.waitReady(bad)
+
+	blocks, _ := e.engine.Store.Blocks(bad)
+	backend := e.engine.Backend.(*files.LocalBackend)
+	path := filepath.Join(backend.Dir, fmt.Sprintf("%d.blob", blocks[0].MsgID))
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[10] ^= 1
+	os.WriteFile(path, raw, 0o600)
+
+	e.must("POST", "/api/verify", map[string]any{"ids": []int64{folder.ID}})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var st files.VerifyStatus
+		json.Unmarshal(e.must("GET", "/api/verify", nil), &st)
+		if !st.Running {
+			if st.Done != 2 || len(st.Bad) != 1 || st.Bad[0] != "schlecht.bin" {
+				t.Fatalf("status: %+v", st)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("verify did not finish")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n, _ := e.engine.Store.Get(good); n.VerifyStatus != store.VerifyOK {
+		t.Fatalf("good: %+v", n.VerifyStatus)
+	}
+	if n, _ := e.engine.Store.Get(bad); n.VerifyStatus != store.VerifyBad {
+		t.Fatalf("bad: %+v", n.VerifyStatus)
+	}
+}
+
+func TestPurgeDeletesFromBackendAtOnce(t *testing.T) {
+	e := newEnv(t)
+	e.setup()
+	id := e.upload(store.RootID, "weg.bin", make([]byte, 100), true)
+	e.waitReady(id)
+	backend := e.engine.Backend.(*files.LocalBackend)
+	e.must("POST", "/api/delete", map[string]any{"ids": []int64{id}})
+	if entries, _ := os.ReadDir(backend.Dir); len(entries) == 0 {
+		t.Fatal("trash must keep the data")
+	}
+	e.must("POST", "/api/trash/purge", map[string]any{"ids": []int64{id}})
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		entries, _ := os.ReadDir(backend.Dir)
+		remaining := 0
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), ".blob") {
+				remaining++
+			}
+		}
+		// The startup backup may hold one blob of its own.
+		if remaining <= 1 {
+			if orphans, _ := e.engine.Store.Orphans(10); len(orphans) == 0 {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d blobs left", remaining)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestMigrationKeepsOldDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE nodes (id INTEGER PRIMARY KEY, parent_id INTEGER, name TEXT NOT NULL, is_dir INTEGER NOT NULL DEFAULT 0,
+		size INTEGER NOT NULL DEFAULT 0, mime TEXT NOT NULL DEFAULT '', encrypted INTEGER NOT NULL DEFAULT 0, policy INTEGER NOT NULL DEFAULT 0,
+		state TEXT NOT NULL DEFAULT 'ready', error TEXT NOT NULL DEFAULT '', sha256 TEXT NOT NULL DEFAULT '', wrapped_key BLOB, stage_path TEXT NOT NULL DEFAULT '',
+		attempts INTEGER NOT NULL DEFAULT 0, next_try INTEGER NOT NULL DEFAULT 0, mtime INTEGER NOT NULL, ctime INTEGER NOT NULL, trashed_at INTEGER);
+		INSERT INTO nodes(id, parent_id, name, is_dir, mtime, ctime) VALUES (1, NULL, '', 1, 1, 1), (2, 1, 'alt.txt', 0, 1, 1);`)
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if n, err := st.Child(store.RootID, "alt.txt"); err != nil || n.MD5 != "" {
+		t.Fatalf("%+v %v", n, err)
 	}
 }
 

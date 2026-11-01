@@ -17,6 +17,7 @@
     paste: 'M6 3h6v3H6zM4 4H3v12h12V4h-1',
     list: 'M3 5h12M3 9h12M3 13h12',
     grid: 'M3 3h5v5H3zM10 3h5v5h-5zM3 10h5v5H3zM10 10h5v5h-5z',
+    columns: 'M3 3h12v12H3zM7 3v12M11 3v12',
     lock: 'M5 8h8v7H5zM6.5 8V5.5a2.5 2.5 0 0 1 5 0V8',
     unlock: 'M5 8h8v7H5zM6.5 8V5.5a2.5 2.5 0 0 1 4.8-1',
     settings: 'M9 11.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM9 2v2M9 14v2M2 9h2M14 9h2M4 4l1.5 1.5M12.5 12.5 14 14M4 14l1.5-1.5M12.5 5.5 14 4',

@@ -122,6 +122,7 @@ func (s *Server) shareUnlock(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	if sh.PasswordHash == "" || !auth.CheckHash(sh.PasswordHash, r.FormValue("password")) {
 		s.Auth.Limiter.Fail(key)
+		s.Engine.Store.Log(store.LevelWarn, store.KindShare, "Falsches Kennwort für Freigabe „%s“ von %s", sh.Name, s.clientIP(r))
 		s.renderShareState(w, r, sh, "Kennwort ist falsch.")
 		return
 	}
@@ -164,6 +165,7 @@ func (s *Server) shareDownload(w http.ResponseWriter, r *http.Request) {
 				return store.ErrNotFound
 			}
 		}
+		s.logDownload(r, "über Freigabe geladen von "+s.clientIP(r), n.Name)
 		if n.IsDir {
 			entries, err := s.Engine.Store.Descendants(n.ID, n.Name+"/")
 			if err != nil {

@@ -4,7 +4,7 @@
   import Icon from './Icon.svelte'
   import TreeNode from './TreeNode.svelte'
 
-  let { node, label, depth = 0, currentId, version, onnavigate, ondropnodes, startOpen = false } = $props()
+  let { node, label, depth = 0, currentId, version, onnavigate, ondropnodes, oncontext, startOpen = false } = $props()
 
   let open = $state(startOpen)
   let children = $state(null)
@@ -46,6 +46,7 @@
     }
   }}
   ondragleave={() => (over = false)}
+  oncontextmenu={(e) => oncontext(e, node)}
   {ondrop}
 >
   <button class="twist" class:open aria-label={open ? 'Zuklappen' : 'Aufklappen'} onclick={() => (open = !open)}>
@@ -58,7 +59,7 @@
 </div>
 {#if open && children}
   {#each children as child (child.id)}
-    <TreeNode node={child} depth={depth + 1} {currentId} {version} {onnavigate} {ondropnodes} />
+    <TreeNode node={child} depth={depth + 1} {currentId} {version} {onnavigate} {ondropnodes} {oncontext} />
   {/each}
 {/if}
 

@@ -184,15 +184,74 @@ func (s *Server) purge(w http.ResponseWriter, r *http.Request) error {
 	return writeJSON(w, map[string]bool{"ok": true})
 }
 
-func (s *Server) verify(w http.ResponseWriter, r *http.Request) error {
+func (s *Server) startVerify(w http.ResponseWriter, r *http.Request) error {
+	var in struct{ IDs []int64 }
+	if err := readJSON(r, &in); err != nil {
+		return err
+	}
+	added, err := s.Engine.EnqueueVerify(in.IDs)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, map[string]int{"added": added})
+}
+
+func (s *Server) verifyState(w http.ResponseWriter, r *http.Request) error {
+	return writeJSON(w, s.Engine.VerifyState())
+}
+
+func (s *Server) clearVerify(w http.ResponseWriter, r *http.Request) error {
+	s.Engine.ClearVerify()
+	return writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (s *Server) stats(w http.ResponseWriter, r *http.Request) error {
+	st, err := s.Engine.Store.Stats()
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, st)
+}
+
+func (s *Server) logs(w http.ResponseWriter, r *http.Request) error {
+	q := r.URL.Query()
+	list, err := s.Engine.Store.Events(q.Get("level"), q.Get("kind"), 1000)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, list)
+}
+
+func (s *Server) clearLogs(w http.ResponseWriter, r *http.Request) error {
+	if err := s.Engine.Store.ClearEvents(); err != nil {
+		return err
+	}
+	return writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (s *Server) endSharesOf(w http.ResponseWriter, r *http.Request) error {
 	n, err := s.liveNode(r)
 	if err != nil {
 		return err
 	}
-	if err := s.Engine.Verify(r.Context(), n); err != nil {
-		return badRequest(err.Error())
+	count, err := s.Engine.Store.DeleteSharesOf(n.ID)
+	if err != nil {
+		return err
 	}
-	return writeJSON(w, map[string]bool{"ok": true})
+	s.Engine.Store.Log(store.LevelInfo, store.KindShare, "Freigabe für „%s“ beendet (%d Link(s))", n.Name, count)
+	return writeJSON(w, map[string]int64{"ended": count})
+}
+
+// logDownload records a download once: players and resuming clients send many
+// range requests for what is a single download to the person watching the log.
+func (s *Server) logDownload(r *http.Request, who, name string) {
+	if r.Method != http.MethodGet {
+		return
+	}
+	if rng := r.Header.Get("Range"); rng != "" && !strings.HasPrefix(rng, "bytes=0-") {
+		return
+	}
+	s.Engine.Store.Log(store.LevelInfo, store.KindDownload, "„%s“ %s", name, who)
 }
 
 func (s *Server) retry(w http.ResponseWriter, r *http.Request) error {
@@ -261,7 +320,11 @@ func (s *Server) content(w http.ResponseWriter, r *http.Request) error {
 	if n.IsDir {
 		return badRequest("ist ein Ordner")
 	}
-	return s.serveFile(w, r, n, r.URL.Query().Get("inline") == "1")
+	inline := r.URL.Query().Get("inline") == "1"
+	if !inline && r.Header.Get("Range") == "" {
+		s.logDownload(r, "heruntergeladen", n.Name)
+	}
+	return s.serveFile(w, r, n, inline)
 }
 
 func (s *Server) zipDownload(w http.ResponseWriter, r *http.Request) error {
@@ -275,6 +338,7 @@ func (s *Server) zipDownload(w http.ResponseWriter, r *http.Request) error {
 			return err
 		}
 	}
+	s.Engine.Store.Log(store.LevelInfo, store.KindDownload, "ZIP mit %d Datei(en) heruntergeladen", len(entries))
 	return s.writeZip(w, r, "Telegram Explorer.zip", entries)
 }
 
@@ -319,6 +383,9 @@ func (s *Server) writeZip(w http.ResponseWriter, r *http.Request, name string, e
 			return nil
 		}
 		if err := s.copyNode(r.Context(), fw, n); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				s.Engine.Store.Log(store.LevelError, store.KindDownload, "ZIP abgebrochen bei „%s“: %v", n.Name, err)
+			}
 			// Headers are gone; aborting is the only way to signal the failure,
 			// and without the central directory the archive is visibly invalid.
 			panic(http.ErrAbortHandler)
@@ -442,6 +509,7 @@ func (s *Server) uploadChunk(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	s.Engine.Store.Log(store.LevelInfo, store.KindUpload, "„%s“ im Browser hochgeladen (%d Bytes)", u.Name, u.Size)
 	s.Engine.Store.DeleteUpload(id)
 	s.uploadLocks.Delete(id)
 	return writeJSON(w, map[string]any{"received": u.Size, "node": node})
@@ -484,7 +552,8 @@ func (s *Server) createShare(w http.ResponseWriter, r *http.Request) error {
 	if in.ExpiresHours < 0 || in.MaxDownloads < 0 {
 		return badRequest("ungültige Werte")
 	}
-	if _, err := s.Engine.Store.Get(in.NodeID); err != nil {
+	target, err := s.Engine.Store.Get(in.NodeID)
+	if err != nil {
 		return err
 	}
 	sh := &store.Share{Token: auth.Token(24), NodeID: in.NodeID, MaxDownloads: in.MaxDownloads}
@@ -501,13 +570,24 @@ func (s *Server) createShare(w http.ResponseWriter, r *http.Request) error {
 	if err := s.Engine.Store.CreateShare(sh); err != nil {
 		return err
 	}
+	s.Engine.Store.Log(store.LevelInfo, store.KindShare, "Freigabe für „%s“ erstellt", target.Name)
 	return writeJSON(w, map[string]string{"token": sh.Token})
 }
 
 func (s *Server) deleteShare(w http.ResponseWriter, r *http.Request) error {
-	if err := s.Engine.Store.DeleteShare(r.PathValue("token")); err != nil {
+	token := r.PathValue("token")
+	name := "unbekannt"
+	if list, err := s.Engine.Store.Shares(); err == nil {
+		for _, sh := range list {
+			if sh.Token == token {
+				name = sh.Name
+			}
+		}
+	}
+	if err := s.Engine.Store.DeleteShare(token); err != nil {
 		return err
 	}
+	s.Engine.Store.Log(store.LevelInfo, store.KindShare, "Freigabe für „%s“ beendet", name)
 	return writeJSON(w, map[string]bool{"ok": true})
 }
 

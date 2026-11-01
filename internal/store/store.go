@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -87,27 +88,144 @@ CREATE TABLE IF NOT EXISTS uploads (
 	created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS events (
+	id      INTEGER PRIMARY KEY,
+	ts      INTEGER NOT NULL,
+	level   TEXT NOT NULL,
+	kind    TEXT NOT NULL,
+	message TEXT NOT NULL
+);
 `
+
+// Event levels.
+const (
+	LevelInfo  = "info"
+	LevelWarn  = "warn"
+	LevelError = "error"
+)
+
+// Event kinds.
+const (
+	KindUpload   = "upload"
+	KindDownload = "download"
+	KindShare    = "share"
+	KindDelete   = "delete"
+	KindVerify   = "verify"
+	KindLogin    = "login"
+	KindTelegram = "telegram"
+	KindSystem   = "system"
+)
+
+const eventsKept = 5000
+
+// Event is one line of the protocol page.
+type Event struct {
+	ID      int64  `json:"id"`
+	TS      int64  `json:"ts"`
+	Level   string `json:"level"`
+	Kind    string `json:"kind"`
+	Message string `json:"message"`
+}
+
+// Log records an event. Logging must never break the operation it describes,
+// so a failure here is only written to the process log.
+func (s *Store) Log(level, kind, format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if _, err := s.db.Exec(`INSERT INTO events(ts, level, kind, message) VALUES (?, ?, ?, ?)`, time.Now().Unix(), level, kind, msg); err != nil {
+		log.Printf("event: %v", err)
+		return
+	}
+	if level != LevelInfo {
+		log.Printf("%s %s: %s", level, kind, msg)
+	}
+	s.db.Exec(`DELETE FROM events WHERE id <= (SELECT MAX(id) FROM events) - ?`, eventsKept)
+}
+
+// Events returns the newest events, filtered when level or kind are set.
+func (s *Store) Events(level, kind string, limit int) ([]Event, error) {
+	rows, err := s.db.Query(`SELECT id, ts, level, kind, message FROM events
+		WHERE (? = '' OR level = ?) AND (? = '' OR kind = ?) ORDER BY id DESC LIMIT ?`, level, level, kind, kind, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Event{}
+	for rows.Next() {
+		var e Event
+		if err := rows.Scan(&e.ID, &e.TS, &e.Level, &e.Kind, &e.Message); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ClearEvents empties the protocol.
+func (s *Store) ClearEvents() error {
+	_, err := s.db.Exec(`DELETE FROM events`)
+	return err
+}
+
+// migrations add columns to databases created by older versions.
+var migrations = []struct{ table, column, def string }{
+	{"nodes", "md5", "TEXT NOT NULL DEFAULT ''"},
+	{"nodes", "verify_status", "TEXT NOT NULL DEFAULT ''"},
+	{"nodes", "verify_note", "TEXT NOT NULL DEFAULT ''"},
+	{"nodes", "verified_at", "INTEGER NOT NULL DEFAULT 0"},
+}
+
+// Verification results. VerifyError means the check could not finish, which
+// says nothing about the file.
+const (
+	VerifyOK    = "ok"
+	VerifyBad   = "bad"
+	VerifyError = "error"
+)
 
 // Node is a file or a folder.
 type Node struct {
-	ID         int64  `json:"id"`
-	ParentID   int64  `json:"parentId"`
-	Name       string `json:"name"`
-	IsDir      bool   `json:"isDir"`
-	Size       int64  `json:"size"`
-	Mime       string `json:"mime"`
-	Encrypted  bool   `json:"encrypted"`
-	Policy     int    `json:"policy"`
-	State      string `json:"state"`
-	Error      string `json:"error,omitempty"`
-	SHA256     string `json:"sha256,omitempty"`
-	MTime      int64  `json:"mtime"`
-	CTime      int64  `json:"ctime"`
-	TrashedAt  int64  `json:"trashedAt,omitempty"`
+	ID           int64  `json:"id"`
+	ParentID     int64  `json:"parentId"`
+	Name         string `json:"name"`
+	IsDir        bool   `json:"isDir"`
+	Size         int64  `json:"size"`
+	Mime         string `json:"mime"`
+	Encrypted    bool   `json:"encrypted"`
+	Policy       int    `json:"policy"`
+	State        string `json:"state"`
+	Error        string `json:"error,omitempty"`
+	SHA256       string `json:"sha256,omitempty"`
+	MD5          string `json:"md5,omitempty"`
+	VerifyStatus string `json:"verifyStatus,omitempty"`
+	VerifyNote   string `json:"verifyNote,omitempty"`
+	VerifiedAt   int64  `json:"verifiedAt,omitempty"`
+	MTime        int64  `json:"mtime"`
+	CTime        int64  `json:"ctime"`
+	TrashedAt    int64  `json:"trashedAt,omitempty"`
+	Shared       bool   `json:"shared"`
+	Segments     int64  `json:"segments"`
+	// FileCount is the number of files below a folder.
+	FileCount  int64  `json:"fileCount,omitempty"`
 	WrappedKey []byte `json:"-"`
 	StagePath  string `json:"-"`
 	Attempts   int    `json:"-"`
+}
+
+// Stats summarizes the whole storage.
+type Stats struct {
+	Files      int64 `json:"files"`
+	Folders    int64 `json:"folders"`
+	Segments   int64 `json:"segments"`
+	Size       int64 `json:"size"`
+	Stored     int64 `json:"stored"`
+	Encrypted  int64 `json:"encrypted"`
+	Plain      int64 `json:"plain"`
+	Shares     int64 `json:"shares"`
+	TrashFiles int64 `json:"trashFiles"`
+	TrashSize  int64 `json:"trashSize"`
+	LastUpload int64 `json:"lastUpload"`
+	Unverified int64 `json:"unverified"`
+	Corrupted  int64 `json:"corrupted"`
 }
 
 // Block is one Telegram message that holds a part of a file.
@@ -125,6 +243,7 @@ type Share struct {
 	IsDir        bool   `json:"isDir"`
 	PasswordHash string `json:"-"`
 	HasPassword  bool   `json:"hasPassword"`
+	Trashed      bool   `json:"trashed"`
 	ExpiresAt    int64  `json:"expiresAt"`
 	MaxDownloads int    `json:"maxDownloads"`
 	Downloads    int    `json:"downloads"`
@@ -161,6 +280,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migration: %w", err)
+	}
 	now := time.Now().Unix()
 	if _, err := db.Exec(`INSERT OR IGNORE INTO nodes(id, parent_id, name, is_dir, policy, mtime, ctime) VALUES (?, NULL, '', 1, ?, ?, ?)`,
 		RootID, PolicyEncrypt, now, now); err != nil {
@@ -168,6 +291,22 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	return &Store{db: db}, nil
+}
+
+func migrate(db *sql.DB) error {
+	for _, m := range migrations {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, m.table, m.column).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			continue
+		}
+		if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, m.table, m.column, m.def)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Close closes the database.
@@ -186,14 +325,20 @@ func (s *Store) Snapshot(path string) error {
 	return err
 }
 
-const nodeCols = `id, COALESCE(parent_id, 0), name, is_dir, size, mime, encrypted, policy, state, error, sha256, wrapped_key, stage_path, attempts, mtime, ctime, COALESCE(trashed_at, 0)`
+const activeShare = `(s.expires_at = 0 OR s.expires_at > CAST(strftime('%s', 'now') AS INTEGER)) AND (s.max_downloads = 0 OR s.downloads < s.max_downloads)`
+
+const nodeCols = `id, COALESCE(parent_id, 0), name, is_dir, size, mime, encrypted, policy, state, error, sha256, md5, verify_status, verify_note, verified_at,
+	wrapped_key, stage_path, attempts, mtime, ctime, COALESCE(trashed_at, 0),
+	EXISTS(SELECT 1 FROM shares s WHERE s.node_id = nodes.id AND ` + activeShare + `),
+	(SELECT COUNT(*) FROM blocks b WHERE b.node_id = nodes.id)`
 
 type scanner interface{ Scan(...any) error }
 
 func scanNode(r scanner) (*Node, error) {
 	var n Node
 	err := r.Scan(&n.ID, &n.ParentID, &n.Name, &n.IsDir, &n.Size, &n.Mime, &n.Encrypted, &n.Policy, &n.State, &n.Error,
-		&n.SHA256, &n.WrappedKey, &n.StagePath, &n.Attempts, &n.MTime, &n.CTime, &n.TrashedAt)
+		&n.SHA256, &n.MD5, &n.VerifyStatus, &n.VerifyNote, &n.VerifiedAt,
+		&n.WrappedKey, &n.StagePath, &n.Attempts, &n.MTime, &n.CTime, &n.TrashedAt, &n.Shared, &n.Segments)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -229,7 +374,64 @@ func (s *Store) Child(parent int64, name string) (*Node, error) {
 
 // List returns the live children of a folder.
 func (s *Store) List(parent int64) ([]*Node, error) {
-	return s.nodes(`SELECT `+nodeCols+` FROM nodes WHERE parent_id = ? AND trashed_at IS NULL ORDER BY is_dir DESC, name COLLATE NOCASE`, parent)
+	list, err := s.nodes(`SELECT `+nodeCols+` FROM nodes WHERE parent_id = ? AND trashed_at IS NULL ORDER BY is_dir DESC, name COLLATE NOCASE`, parent)
+	if err != nil {
+		return nil, err
+	}
+	return list, s.addFolderTotals(list)
+}
+
+const liveTree = `WITH RECURSIVE t(id) AS (
+	SELECT id FROM nodes WHERE parent_id = ? AND trashed_at IS NULL
+	UNION ALL SELECT n.id FROM nodes n JOIN t ON n.parent_id = t.id WHERE n.trashed_at IS NULL) `
+
+// addFolderTotals fills in what a folder contains, recursively.
+func (s *Store) addFolderTotals(list []*Node) error {
+	for _, n := range list {
+		if !n.IsDir {
+			continue
+		}
+		err := s.db.QueryRow(liveTree+`SELECT COALESCE(SUM(is_dir = 0), 0), COALESCE(SUM(size), 0),
+			(SELECT COUNT(*) FROM blocks WHERE node_id IN (SELECT id FROM t))
+			FROM nodes WHERE id IN (SELECT id FROM t)`, n.ID).Scan(&n.FileCount, &n.Size, &n.Segments)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Stats summarizes everything that is not in the trash, plus the trash itself.
+func (s *Store) Stats() (*Stats, error) {
+	st := &Stats{}
+	err := s.db.QueryRow(liveTree+`SELECT
+		COALESCE(SUM(is_dir = 0), 0), COALESCE(SUM(is_dir = 1), 0), COALESCE(SUM(size), 0),
+		COALESCE(SUM(is_dir = 0 AND encrypted = 1), 0), COALESCE(SUM(is_dir = 0 AND encrypted = 0), 0),
+		COALESCE(SUM(is_dir = 0 AND state = 'ready' AND verify_status = ''), 0),
+		COALESCE(SUM(verify_status = 'bad'), 0),
+		COALESCE(MAX(CASE WHEN is_dir = 0 AND state = 'ready' THEN ctime END), 0),
+		(SELECT COUNT(*) FROM blocks WHERE node_id IN (SELECT id FROM t)),
+		(SELECT COALESCE(SUM(size), 0) FROM blocks WHERE node_id IN (SELECT id FROM t))
+		FROM nodes WHERE id IN (SELECT id FROM t)`, RootID).
+		Scan(&st.Files, &st.Folders, &st.Size, &st.Encrypted, &st.Plain, &st.Unverified, &st.Corrupted, &st.LastUpload, &st.Segments, &st.Stored)
+	if err != nil {
+		return nil, err
+	}
+	var allFiles, allSize int64
+	if err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(size), 0) FROM nodes WHERE is_dir = 0`).Scan(&allFiles, &allSize); err != nil {
+		return nil, err
+	}
+	st.TrashFiles, st.TrashSize = allFiles-st.Files, allSize-st.Size
+	err = s.db.QueryRow(liveTree+`SELECT COUNT(*) FROM shares s WHERE s.node_id IN (SELECT id FROM t) AND `+activeShare, RootID).Scan(&st.Shares)
+	return st, err
+}
+
+// SetVerify stores the result of a check. A check also fills in an MD5 that
+// files from older versions do not have yet.
+func (s *Store) SetVerify(id int64, status, note, md5 string) error {
+	_, err := s.db.Exec(`UPDATE nodes SET verify_status = ?, verify_note = ?, verified_at = ?,
+		md5 = CASE WHEN md5 = '' THEN ? ELSE md5 END WHERE id = ?`, status, note, time.Now().Unix(), md5, id)
+	return err
 }
 
 // Search finds live nodes by name.
@@ -329,9 +531,9 @@ func (s *Store) InsertFile(n *Node, replace bool) (*Node, error) {
 			return nil, err
 		}
 	}
-	res, err := tx.Exec(`INSERT INTO nodes(parent_id, name, size, mime, encrypted, state, sha256, wrapped_key, stage_path, mtime, ctime)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		n.ParentID, n.Name, n.Size, n.Mime, n.Encrypted, n.State, n.SHA256, n.WrappedKey, n.StagePath, n.MTime, now)
+	res, err := tx.Exec(`INSERT INTO nodes(parent_id, name, size, mime, encrypted, state, sha256, md5, wrapped_key, stage_path, mtime, ctime)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		n.ParentID, n.Name, n.Size, n.Mime, n.Encrypted, n.State, n.SHA256, n.MD5, n.WrappedKey, n.StagePath, n.MTime, now)
 	if err != nil {
 		return nil, uniqueErr(err)
 	}
@@ -652,13 +854,30 @@ func (s *Store) Shares() ([]*Share, error) {
 		}
 		out = append(out, sh)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for _, sh := range out {
+		n, err := s.Get(sh.NodeID)
+		sh.Trashed = err != nil || n.TrashedAt != 0 || !s.alive(n)
+	}
+	return out, nil
 }
 
 // DeleteShare removes a link.
 func (s *Store) DeleteShare(token string) error {
 	_, err := s.db.Exec(`DELETE FROM shares WHERE token = ?`, token)
 	return err
+}
+
+// DeleteSharesOf ends all links of a node and returns how many there were.
+func (s *Store) DeleteSharesOf(node int64) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM shares WHERE node_id = ?`, node)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // CountDownload atomically consumes one download. It reports false when the

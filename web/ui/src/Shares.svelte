@@ -14,9 +14,15 @@
   }
 
   async function remove(token) {
-    await api(`/shares/${token}`, { method: 'DELETE' })
-    load()
+    try {
+      await api(`/shares/${token}`, { method: 'DELETE' })
+      await load()
+    } catch (err) {
+      onerror(err.message)
+    }
   }
+
+  const expired = (s) => (s.expiresAt && s.expiresAt * 1000 < Date.now()) || (s.maxDownloads && s.downloads >= s.maxDownloads)
 
   $effect(() => {
     load()
@@ -30,17 +36,18 @@
 {:else if shares}
   <div class="wrap">
     <table>
-      <thead><tr><th>Name</th><th>Läuft ab</th><th>Downloads</th><th>Kennwort</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Status</th><th>Läuft ab</th><th>Downloads</th><th>Kennwort</th><th></th></tr></thead>
       <tbody>
         {#each shares as share (share.token)}
           <tr>
             <td class="n">{share.name}</td>
+            <td>{share.trashed ? 'Datei im Papierkorb' : expired(share) ? 'Abgelaufen' : 'Aktiv'}</td>
             <td>{share.expiresAt ? formatDate(share.expiresAt) : 'Nie'}</td>
             <td>{share.downloads}{share.maxDownloads ? ` / ${share.maxDownloads}` : ''}</td>
             <td>{share.hasPassword ? 'Ja' : 'Nein'}</td>
             <td class="a">
               <button class="icon" title="Link kopieren" aria-label="Link kopieren" onclick={() => navigator.clipboard.writeText(link(share.token))}><Icon name="copy" size={15} /></button>
-              <button class="icon" title="Freigabe beenden" aria-label="Freigabe beenden" onclick={() => remove(share.token)}><Icon name="trash" size={15} /></button>
+              <button class="secondary end" onclick={() => remove(share.token)}>Freigabe beenden</button>
             </td>
           </tr>
         {/each}
@@ -88,5 +95,10 @@
   }
   .a {
     text-align: right;
+    white-space: nowrap;
+  }
+  .end {
+    height: 28px;
+    padding: 0 10px;
   }
 </style>
