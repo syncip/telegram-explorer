@@ -34,6 +34,18 @@ export async function api(path, { method = 'GET', body, headers, raw } = {}) {
 
 export const post = (path, body = {}) => api(path, { method: 'POST', body })
 
+// The clipboard API only exists on HTTPS and localhost, plain HTTP needs the old way.
+export async function copyText(text) {
+  if (navigator.clipboard) return navigator.clipboard.writeText(text)
+  const area = document.createElement('textarea')
+  area.value = text
+  document.body.append(area)
+  area.select()
+  const ok = document.execCommand('copy')
+  area.remove()
+  if (!ok) throw new Error('Kopieren nicht möglich')
+}
+
 export function formatSize(n) {
   if (n === undefined || n === null) return ''
   const units = ['B', 'KB', 'MB', 'GB', 'TB']

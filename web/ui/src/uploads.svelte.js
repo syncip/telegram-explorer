@@ -1,6 +1,8 @@
 import { api, ApiError, post } from './api.js'
 
 const CHUNK = 8 << 20
+
+let nextKey = 1
 const PARALLEL = 2
 const RETRY_LIMIT = 8
 
@@ -107,7 +109,7 @@ function pump() {
 
 export function enqueue(file, parentId, encrypted, name = file.name) {
   uploads.items.push({
-    key: crypto.randomUUID(),
+    key: nextKey++,
     file,
     parentId,
     name,

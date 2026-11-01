@@ -1,5 +1,5 @@
 <script>
-  import { post } from './api.js'
+  import { copyText, post } from './api.js'
   import Dialog from './Dialog.svelte'
 
   let { node, onclose } = $props()
@@ -23,8 +23,12 @@
   }
 
   async function copy() {
-    await navigator.clipboard.writeText(link)
-    copied = true
+    try {
+      await copyText(link)
+      copied = true
+    } catch (err) {
+      error = err.message
+    }
   }
 </script>
 

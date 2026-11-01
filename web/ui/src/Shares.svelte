@@ -1,5 +1,5 @@
 <script>
-  import { api, formatDate } from './api.js'
+  import { api, copyText, formatDate } from './api.js'
   import Icon from './Icon.svelte'
 
   let { onerror } = $props()
@@ -46,7 +46,7 @@
             <td>{share.downloads}{share.maxDownloads ? ` / ${share.maxDownloads}` : ''}</td>
             <td>{share.hasPassword ? 'Ja' : 'Nein'}</td>
             <td class="a">
-              <button class="icon" title="Link kopieren" aria-label="Link kopieren" onclick={() => navigator.clipboard.writeText(link(share.token))}><Icon name="copy" size={15} /></button>
+              <button class="icon" title="Link kopieren" aria-label="Link kopieren" onclick={() => copyText(link(share.token)).catch((err) => onerror(err.message))}><Icon name="copy" size={15} /></button>
               <button class="secondary end" onclick={() => remove(share.token)}>Freigabe beenden</button>
             </td>
           </tr>
