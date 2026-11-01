@@ -74,6 +74,11 @@
     await api('/verify', { method: 'DELETE' })
     onverifychange()
   }
+
+  function clearDone() {
+    clearFinished()
+    if (showVerify && !verify.running) stopVerify()
+  }
 </script>
 
 {#if total > 0}
@@ -82,7 +87,7 @@
       <button class="title" onclick={() => (collapsed = !collapsed)} aria-expanded={!collapsed}>
         {active ? `Übertragungen (${active} aktiv)` : 'Übertragungen abgeschlossen'}{remaining ? `, ${remaining}` : ''}
       </button>
-      <button class="icon" title="Abgeschlossene entfernen" aria-label="Abgeschlossene entfernen" onclick={clearFinished}><Icon name="check" size={14} /></button>
+      <button class="icon" title="Abgeschlossene entfernen" aria-label="Abgeschlossene entfernen" onclick={clearDone}><Icon name="check" size={14} /></button>
     </header>
     {#if !collapsed}
       <ul>
@@ -90,7 +95,11 @@
           <li>
             <div class="line">
               <span class="name">{verify.running ? `Prüfung: ${verify.current}` : 'Prüfung abgeschlossen'}</span>
-              <button class="icon sm" aria-label={verify.running ? 'Prüfung abbrechen' : 'Ausblenden'} onclick={stopVerify}><Icon name="close" size={12} /></button>
+              {#if verify.running}
+                <button class="icon sm" title="Prüfung abbrechen" aria-label="Prüfung abbrechen" onclick={stopVerify}><Icon name="close" size={12} /></button>
+              {:else}
+                <button class="icon sm" title="Bestätigen" aria-label="Bestätigen" onclick={stopVerify}><Icon name="check" size={14} /></button>
+              {/if}
             </div>
             <progress max="100" value={verify.bytesTotal > 0 ? pct(verify.bytesDone, verify.bytesTotal) : pct(verify.done, verify.total)}></progress>
             {#if verify.running}
