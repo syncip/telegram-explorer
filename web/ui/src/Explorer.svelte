@@ -165,7 +165,10 @@
     }
   }
 
+  // Only the newest load counts, an older answer may arrive after it.
+  let loads = 0
   async function load() {
+    const run = ++loads
     await guard(async () => {
       if (mode === 'trash') {
         items = await api('/trash')
@@ -173,6 +176,7 @@
         items = await api('/search?q=' + encodeURIComponent(query))
       } else if (mode === 'files') {
         const [info, list, open] = await Promise.all([api(`/nodes/${currentId}`), api(`/nodes/${currentId}/children`), api(`/nodes/${currentId}/uploads`)])
+        if (run !== loads) return
         path = info.path
         items = list
         unfinished = open
@@ -504,6 +508,7 @@
     if (!hasFiles(e) || mode !== 'files') return
     e.preventDefault()
     await guard(() => addDropped(e.dataTransfer, currentId, encrypt))
+    await refreshAll()
   }
 
   function dropOnFolder(e, node) {
@@ -580,8 +585,9 @@
     conflictChain = answer.catch(() => {})
     return answer
   }
-  uploads.onDone = (parentId) => {
-    if (parentId === currentId && mode === 'files') load()
+  // Also for uploads into subfolders: the sizes shown here include them.
+  uploads.onDone = () => {
+    if (mode === 'files') load()
   }
 
   let lastJobs = 0

@@ -111,7 +111,7 @@ async function run(item) {
     if (item.state === 'canceled') return
     item.nodeId = node.id
     item.state = 'server'
-    uploads.onDone?.(item.parentId)
+    uploads.onDone?.()
   } catch (err) {
     item.state = 'error'
     item.error = err.message
@@ -177,7 +177,7 @@ export async function syncJobs(jobs) {
       if (node.state !== 'ready') continue
       item.state = 'finished'
       item.job = null
-      uploads.onDone?.(item.parentId)
+      uploads.onDone?.()
     } catch (err) {
       if (err.status === 404) item.state = 'canceled'
     }
