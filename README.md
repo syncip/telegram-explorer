@@ -149,8 +149,8 @@ Settings are read from environment variables, usually through `.env`.
 | `DATA_DIR` | `/data` | Location of the database and temporary upload files. |
 | `HTTP_ADDR` | `:8080` | Listen address of the web interface. |
 | `SFTP_ADDR` | `:2222` | Listen address of the SFTP server. |
-| `TG_DOWNLOAD_CONNS` | `4` | Connections per Telegram data center for downloads, 1 to 16. |
-| `TG_DOWNLOAD_READS` | `8` | File parts downloaded at once, 1 to 32. While downloading, the container log shows speed and rate limits once a minute, so you can compare settings. |
+| `TG_DOWNLOAD_CONNS` | `1` | Connections per Telegram data center for downloads, 1 to 16. |
+| `TG_DOWNLOAD_READS` | `4` | File parts downloaded at once, 1 to 32. While downloading, the container log shows speed and rate limits once a minute, so you can compare settings. |
 | `WEBDAV_ADDR` | `:8443` | Listen address of the WebDAV server (HTTPS). |
 | `WEBDAV_HOSTS` | | Names or IPs clients use for WebDAV, comma separated. The self-signed certificate is made out to them and to `localhost`. |
 | `WEBDAV_CERT`, `WEBDAV_KEY` | | Paths to your own certificate and key, for example from Let's Encrypt, mounted into the container. They replace the self-signed certificate. |
@@ -278,7 +278,7 @@ docker compose run --rm -v "$PWD/backup.telexbk:/backup.telexbk:ro" telex restor
 - This is a young project for personal use and has had no independent security audit.
 - It is built for a single user.
 - Using Telegram as file storage may conflict with Telegram's terms of service. Automated use of an account can lead to restrictions. You use this at your own risk.
-- Telegram limits transfer speed, especially on free accounts.
+- Telegram limits transfer speed. Downloads were measured at about 5 MB/s even with Premium, because Telegram answers about five file parts of 1 MB a second for this kind of client, however many connections ask. Uploads reach 30 MB/s and more.
 - A quick check confirms existence and size. Only a full check detects changed content.
 
 ## Development

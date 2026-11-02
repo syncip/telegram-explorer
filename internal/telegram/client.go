@@ -37,14 +37,15 @@ const (
 	docCacheTTL   = 30 * time.Minute
 	sizeBatch     = 100
 	// transferConns is the default number of connections per data center for
-	// reading files. One connection tops out at a few MB/s.
-	transferConns = 4
+	// reading files. Telegram allows an account about five file parts a second,
+	// however many connections ask, and one connection already gets there.
+	transferConns = 1
 
 	transferRetries = 8
 	transferDelay   = time.Second
 
 	// readSlots is the default for the most file parts read at once.
-	readSlots = 8
+	readSlots = 4
 )
 
 // Login steps.
