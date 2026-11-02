@@ -99,6 +99,13 @@ func (g *readGate) signal() {
 	g.free = make(chan struct{})
 }
 
+// state reports how many reads may run at once and their spacing.
+func (g *readGate) state() (int, time.Duration) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.limit, g.gap
+}
+
 func (g *readGate) shrink() {
 	g.mu.Lock()
 	defer g.mu.Unlock()

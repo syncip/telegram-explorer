@@ -36,14 +36,14 @@ const (
 	maxFloodWait  = 10 * time.Minute
 	docCacheTTL   = 30 * time.Minute
 	sizeBatch     = 100
-	// transferConns is the number of connections per data center for reading
-	// files. One connection tops out at a few MB/s, more only provoke rate limits.
+	// transferConns is the default number of connections per data center for
+	// reading files. One connection tops out at a few MB/s.
 	transferConns = 4
 
 	transferRetries = 8
 	transferDelay   = time.Second
 
-	// readSlots is the most file parts read at once.
+	// readSlots is the default for the most file parts read at once.
 	readSlots = 8
 )
 
@@ -80,6 +80,10 @@ type Client struct {
 	AppHash string
 	Store   *store.Store
 	Vault   func() *vault.Vault
+	// Conns and Reads override transferConns and readSlots, for finding out
+	// what Telegram allows an account.
+	Conns int
+	Reads int
 
 	mu       sync.RWMutex
 	status   Status
@@ -101,6 +105,19 @@ type Client struct {
 	floodMu     sync.Mutex
 	floodCounts map[string]int
 	floodLogged time.Time
+
+	statsMu     sync.Mutex
+	statsStart  time.Time
+	statsParts  int
+	statsBytes  int64
+	statsFloods int
+}
+
+func (c *Client) conns() int {
+	if c.Conns > 0 {
+		return c.Conns
+	}
+	return transferConns
 }
 
 // sessionStorage keeps the MTProto session sealed: it grants full account access.
@@ -227,9 +244,9 @@ func (c *Client) filePool(ctx context.Context, dc int) (*tg.Client, error) {
 		err   error
 	)
 	if dc == client.Config().ThisDC {
-		conns, err = client.Pool(transferConns)
+		conns, err = client.Pool(int64(c.conns()))
 	} else {
-		conns, err = client.DC(ctx, dc, transferConns)
+		conns, err = client.DC(ctx, dc, int64(c.conns()))
 	}
 	if err != nil {
 		return nil, err
@@ -237,14 +254,41 @@ func (c *Client) filePool(ctx context.Context, dc int) (*tg.Client, error) {
 	where := fmt.Sprintf("Dateiverbindungen DC %d", dc)
 	pool := tg.NewClient(floodWait{where: where, onWait: c.flooded}.Handle(c.transferRetry().Handle(conns)))
 	c.pools[dc] = pool
-	c.Store.Log(store.LevelInfo, store.KindTelegram, "%d Dateiverbindungen zu Rechenzentrum %d aufgebaut", transferConns, dc)
-	log.Printf("telegram: %d Dateiverbindungen zu Rechenzentrum %d aufgebaut", transferConns, dc)
+	c.Store.Log(store.LevelInfo, store.KindTelegram, "%d Dateiverbindungen zu Rechenzentrum %d aufgebaut", c.conns(), dc)
+	log.Printf("telegram: %d Dateiverbindungen zu Rechenzentrum %d aufgebaut", c.conns(), dc)
 	return pool, nil
 }
 
 func (c *Client) gate() *readGate {
-	c.readsOnce.Do(func() { c.reads = newReadGate(readSlots) })
+	c.readsOnce.Do(func() {
+		slots := readSlots
+		if c.Reads > 0 {
+			slots = c.Reads
+		}
+		c.reads = newReadGate(slots)
+	})
 	return c.reads
+}
+
+// countRead adds a file part to the download figures, which go to the log
+// once a minute while files are read.
+func (c *Client) countRead(n int) {
+	c.statsMu.Lock()
+	defer c.statsMu.Unlock()
+	now := time.Now()
+	if c.statsStart.IsZero() {
+		c.statsStart = now
+	}
+	c.statsParts++
+	c.statsBytes += int64(n)
+	took := now.Sub(c.statsStart)
+	if took < time.Minute {
+		return
+	}
+	limit, gap := c.gate().state()
+	log.Printf("telegram: Download der letzten %ds: %d Teile, %.1f MB/s, %d Bremsen, %d Verbindungen, zuletzt %d von %d Abrufen gleichzeitig, Abstand %s",
+		int(took.Seconds()), c.statsParts, float64(c.statsBytes)/took.Seconds()/1e6, c.statsFloods, c.conns(), limit, c.gate().max, gap)
+	c.statsStart, c.statsParts, c.statsBytes, c.statsFloods = time.Time{}, 0, 0, 0
 }
 
 // flooded notes a rate limit. File reads slow down, and the log says which
@@ -253,6 +297,9 @@ func (c *Client) gate() *readGate {
 func (c *Client) flooded(input bin.Encoder, what string) {
 	if _, ok := input.(*tg.UploadGetFileRequest); ok {
 		c.gate().shrink()
+		c.statsMu.Lock()
+		c.statsFloods++
+		c.statsMu.Unlock()
 	}
 	c.floodMu.Lock()
 	defer c.floodMu.Unlock()
@@ -681,6 +728,7 @@ func (c *Client) ReadPart(ctx context.Context, msgID int, part int64) ([]byte, e
 		if !ok {
 			return nil, fmt.Errorf("unerwartete Antwort von Telegram: %T", res)
 		}
+		c.countRead(len(file.Bytes))
 		return file.Bytes, nil
 	}
 }

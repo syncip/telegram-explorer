@@ -149,6 +149,8 @@ Settings are read from environment variables, usually through `.env`.
 | `DATA_DIR` | `/data` | Location of the database and temporary upload files. |
 | `HTTP_ADDR` | `:8080` | Listen address of the web interface. |
 | `SFTP_ADDR` | `:2222` | Listen address of the SFTP server. |
+| `TG_DOWNLOAD_CONNS` | `4` | Connections per Telegram data center for downloads, 1 to 16. |
+| `TG_DOWNLOAD_READS` | `8` | File parts downloaded at once, 1 to 32. While downloading, the container log shows speed and rate limits once a minute, so you can compare settings. |
 | `WEBDAV_ADDR` | `:8443` | Listen address of the WebDAV server (HTTPS). |
 | `WEBDAV_HOSTS` | | Names or IPs clients use for WebDAV, comma separated. The self-signed certificate is made out to them and to `localhost`. |
 | `WEBDAV_CERT`, `WEBDAV_KEY` | | Paths to your own certificate and key, for example from Let's Encrypt, mounted into the container. They replace the self-signed certificate. |

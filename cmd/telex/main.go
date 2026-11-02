@@ -37,6 +37,20 @@ func env(key, fallback string) string {
 	return fallback
 }
 
+// envInt reads a number within bounds; 0 means unset, so the default applies.
+func envInt(key string, lo, hi int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < lo || n > hi {
+		log.Printf("%s=%q wird ignoriert, erlaubt sind %d bis %d", key, v, lo, hi)
+		return 0
+	}
+	return n
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "restore" {
 		if err := restore(os.Args[2:]); err != nil {
@@ -75,7 +89,8 @@ func run() error {
 		if err != nil || os.Getenv("TG_APP_HASH") == "" {
 			return errors.New("TG_APP_ID und TG_APP_HASH müssen gesetzt sein")
 		}
-		tgClient = &telegram.Client{AppID: appID, AppHash: os.Getenv("TG_APP_HASH"), Store: st, Vault: engine.Vault}
+		tgClient = &telegram.Client{AppID: appID, AppHash: os.Getenv("TG_APP_HASH"), Store: st, Vault: engine.Vault,
+			Conns: envInt("TG_DOWNLOAD_CONNS", 1, 16), Reads: envInt("TG_DOWNLOAD_READS", 1, 32)}
 		backend = tgClient
 	case "local":
 		log.Print("ACHTUNG: lokaler Testspeicher aktiv, Dateien gehen nicht zu Telegram")
