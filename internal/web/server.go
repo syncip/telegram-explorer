@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"telegram-explorer/internal/auth"
+	"telegram-explorer/internal/davd"
 	"telegram-explorer/internal/files"
 	"telegram-explorer/internal/store"
 	"telegram-explorer/internal/telegram"
@@ -50,6 +51,8 @@ type Server struct {
 	OnUnlock func()
 	// OnSFTPChange runs after the SFTP password was set or removed.
 	OnSFTPChange func() error
+	// WebDAV is nil when the endpoint is not wired up, as in tests.
+	WebDAV *davd.Server
 
 	uploadLocks sync.Map
 	grants      sync.Map // share password grant -> expiry
@@ -205,6 +208,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/settings/password", s.open(s.setPassword))
 	mux.HandleFunc("POST /api/settings/passphrase", s.open(s.setPassphrase))
 	mux.HandleFunc("POST /api/settings/sftp", s.open(s.setSFTP))
+	mux.HandleFunc("POST /api/settings/webdav", s.open(s.setWebDAV))
+	mux.HandleFunc("GET /api/settings/webdav/cert", s.open(s.webdavCert))
 	mux.HandleFunc("POST /api/settings/blocks", s.open(s.setBlocks))
 	mux.HandleFunc("POST /api/settings/limits", s.open(s.setLimits))
 	mux.HandleFunc("POST /api/settings/totp/begin", s.open(s.totpBegin))

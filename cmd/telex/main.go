@@ -21,6 +21,7 @@ import (
 	webui "telegram-explorer/web"
 
 	"telegram-explorer/internal/auth"
+	"telegram-explorer/internal/davd"
 	"telegram-explorer/internal/files"
 	"telegram-explorer/internal/sftpd"
 	"telegram-explorer/internal/store"
@@ -88,6 +89,8 @@ func run() error {
 
 	manager := auth.New(st)
 	sftpServer := &sftpd.Server{Addr: env("SFTP_ADDR", ":2222"), Engine: engine, Auth: manager}
+	davServer := &davd.Server{Addr: env("WEBDAV_ADDR", ":8443"), Hosts: os.Getenv("WEBDAV_HOSTS"),
+		CertFile: os.Getenv("WEBDAV_CERT"), KeyFile: os.Getenv("WEBDAV_KEY"), Engine: engine, Auth: manager}
 
 	var once sync.Once
 	onUnlock := func() {
@@ -101,10 +104,15 @@ func run() error {
 					log.Printf("SFTP: %v", err)
 				}
 			}()
+			go func() {
+				if err := davServer.Run(ctx); err != nil {
+					log.Printf("WebDAV: %v", err)
+				}
+			}()
 		})
 	}
 
-	server := &web.Server{Engine: engine, Auth: manager, UI: webui.FS(), OnUnlock: onUnlock, OnSFTPChange: sftpServer.Sync,
+	server := &web.Server{Engine: engine, Auth: manager, UI: webui.FS(), OnUnlock: onUnlock, OnSFTPChange: sftpServer.Sync, WebDAV: davServer,
 		TrustProxy: os.Getenv("TRUST_PROXY") == "1", SetupCode: auth.Token(9)}
 	if tgClient != nil {
 		server.Telegram = tgClient

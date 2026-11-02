@@ -9,6 +9,8 @@ services:
       - "127.0.0.1:8080:8080"
       # Stays closed until SFTP is switched on in the settings.
       - "2222:2222"
+      # WebDAV over HTTPS, closed until WebDAV is switched on in the settings.
+      - "8443:8443"
     volumes:
       - telex-data:/data
     read_only: true

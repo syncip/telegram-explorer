@@ -37,6 +37,7 @@ type User struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 	SFTP     string `json:"sftp,omitempty"`
+	WebDAV   string `json:"webdav,omitempty"`
 	TOTP     string `json:"totp,omitempty"`
 }
 
@@ -180,6 +181,22 @@ func (m *Manager) CheckSFTP(username, password string) bool {
 		return false
 	}
 	ok := CheckHash(u.SFTP, password)
+	return ok && subtle.ConstantTimeCompare([]byte(username), []byte(u.Username)) == 1
+}
+
+// WebDAVEnabled reports whether a WebDAV password is set.
+func (m *Manager) WebDAVEnabled() bool {
+	u, err := m.User()
+	return err == nil && u != nil && u.WebDAV != ""
+}
+
+// CheckWebDAV validates WebDAV credentials. Like SFTP it has its own password.
+func (m *Manager) CheckWebDAV(username, password string) bool {
+	u, err := m.User()
+	if err != nil || u == nil || u.WebDAV == "" {
+		return false
+	}
+	ok := CheckHash(u.WebDAV, password)
 	return ok && subtle.ConstantTimeCompare([]byte(username), []byte(u.Username)) == 1
 }
 

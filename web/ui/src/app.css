@@ -136,7 +136,8 @@ button.primary:disabled {
   cursor: default;
 }
 
-button.secondary {
+button.secondary,
+a.button.secondary {
   background: var(--surface);
   border: 1px solid var(--line-strong);
   border-radius: 4px;
@@ -145,7 +146,8 @@ button.secondary {
   cursor: pointer;
 }
 
-button.secondary:hover {
+button.secondary:hover,
+a.button.secondary:hover {
   background: var(--hover);
 }
 

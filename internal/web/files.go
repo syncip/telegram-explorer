@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -687,8 +688,18 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) error {
 	}
 	backup, _ := s.Engine.Store.Setting("backup_at")
 	speed := s.Engine.Speed()
-	return writeJSON(w, map[string]any{"username": u.Username, "sftpEnabled": u.SFTP != "", "totpEnabled": u.TOTP != "", "backupAt": string(backup), "blockMiB": s.Engine.BlockMiB(),
-		"limitUp": speed.LimitUp, "limitDown": speed.LimitDown})
+	out := map[string]any{"username": u.Username, "sftpEnabled": u.SFTP != "", "totpEnabled": u.TOTP != "", "backupAt": string(backup), "blockMiB": s.Engine.BlockMiB(),
+		"limitUp": speed.LimitUp, "limitDown": speed.LimitDown, "webdavEnabled": u.WebDAV != ""}
+	if s.WebDAV != nil {
+		_, port, _ := net.SplitHostPort(s.WebDAV.Addr)
+		out["webdavPort"] = port
+		if cert, err := s.WebDAV.Cert(); err == nil {
+			out["webdavCert"] = cert
+		} else {
+			out["webdavError"] = err.Error()
+		}
+	}
+	return writeJSON(w, out)
 }
 
 // confirmPassword is required for every change to the credentials, so an
@@ -787,6 +798,60 @@ func (s *Server) setSFTP(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 	return writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (s *Server) setWebDAV(w http.ResponseWriter, r *http.Request) error {
+	if s.WebDAV == nil {
+		return httpError{http.StatusNotFound, "WebDAV ist nicht verfügbar"}
+	}
+	var in struct{ Current, Password string }
+	if err := readJSON(r, &in); err != nil {
+		return err
+	}
+	u, err := s.Auth.User()
+	if err != nil {
+		return err
+	}
+	if err := s.confirmPassword(u, in.Current); err != nil {
+		return err
+	}
+	if in.Password == "" {
+		u.WebDAV = ""
+	} else {
+		if len(in.Password) < minPassword {
+			return badRequest("Kennwort braucht mindestens 8 Zeichen")
+		}
+		if u.WebDAV, err = auth.HashPassword(in.Password); err != nil {
+			return err
+		}
+	}
+	if err := s.Auth.Save(u); err != nil {
+		return err
+	}
+	s.WebDAV.Forget()
+	if in.Password == "" {
+		s.Engine.Store.Log(store.LevelInfo, store.KindSystem, "WebDAV abgeschaltet")
+	} else {
+		s.Engine.Store.Log(store.LevelInfo, store.KindSystem, "WebDAV-Kennwort gesetzt")
+	}
+	if err := s.WebDAV.Sync(); err != nil {
+		return err
+	}
+	return writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (s *Server) webdavCert(w http.ResponseWriter, r *http.Request) error {
+	if s.WebDAV == nil {
+		return httpError{http.StatusNotFound, "WebDAV ist nicht verfügbar"}
+	}
+	cert, err := s.WebDAV.Cert()
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/x-x509-ca-cert")
+	w.Header().Set("Content-Disposition", `attachment; filename="telegram-explorer-webdav.crt"`)
+	_, err = w.Write(cert.PEM)
+	return err
 }
 
 func (s *Server) setBlocks(w http.ResponseWriter, r *http.Request) error {

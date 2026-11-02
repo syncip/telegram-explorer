@@ -17,6 +17,7 @@ A self-hosted file manager with a Windows Explorer look that uses your own Teleg
 - [Reverse proxy](#reverse-proxy)
 - [Using it](#using-it)
 - [SFTP](#sftp)
+- [WebDAV](#webdav)
 - [Encryption](#encryption)
 - [How files are stored](#how-files-are-stored)
 - [Operations](#operations)
@@ -30,7 +31,7 @@ A self-hosted file manager with a Windows Explorer look that uses your own Teleg
 - **Optional encryption:** encrypted files are unreadable to Telegram. Unencrypted files stay normal documents you can download directly in Telegram.
 - **Sharing:** public links with optional password, a lifetime from one minute to 100 years, and a download limit. Links open images, videos and PDFs directly. Shared files are marked in the list, and a share can be changed or ended at any time, including a new link.
 - **Speed limits:** separate limits for traffic to and from Telegram. The status bar shows the current speed and switches the limit with one click.
-- **SFTP:** browse, upload and download with any SFTP client. It stays off until you switch it on.
+- **SFTP and WebDAV:** browse, upload and download with any SFTP client, or mount the storage as a drive over WebDAV with HTTPS. Both stay off until you switch them on.
 - **File checks:** a quick check asks Telegram whether a file still exists, without a download. A full check downloads it and compares checksums.
 - **Configurable columns:** date, type, size, encryption, sharing, state, file count, segment count, MD5 and SHA-256.
 - **Activity log:** uploads, downloads, shares, deletions, checks, logins, warnings and errors.
@@ -148,6 +149,9 @@ Settings are read from environment variables, usually through `.env`.
 | `DATA_DIR` | `/data` | Location of the database and temporary upload files. |
 | `HTTP_ADDR` | `:8080` | Listen address of the web interface. |
 | `SFTP_ADDR` | `:2222` | Listen address of the SFTP server. |
+| `WEBDAV_ADDR` | `:8443` | Listen address of the WebDAV server (HTTPS). |
+| `WEBDAV_HOSTS` | | Names or IPs clients use for WebDAV, comma separated. The self-signed certificate is made out to them and to `localhost`. |
+| `WEBDAV_CERT`, `WEBDAV_KEY` | | Paths to your own certificate and key, for example from Let's Encrypt, mounted into the container. They replace the self-signed certificate. |
 
 Everything else is set in the web interface, including the SFTP password, the segment size, speed limits and two-factor authentication.
 
@@ -197,6 +201,24 @@ sftp -P 2222 username@storage.example.com
 Written files first land in temporary storage and are transferred to Telegram when closed. An overwritten file's old version moves to the trash.
 
 Plain FTP is deliberately not included, because it sends passwords in clear text.
+
+## WebDAV
+
+WebDAV lets Windows, macOS, Linux and many apps mount the storage as a drive. It stays off and its port stays closed until you set a WebDAV password under *Einstellungen → Zugänge*. Log in with your normal username.
+
+WebDAV only runs over HTTPS, because it sends the password with every request. It does not work through Cloudflare Tunnel: connect to the server directly on port 8443, by IP or a name that points to the server, and put that name into `WEBDAV_HOSTS`.
+
+Without your own certificate the server creates one for these names. Clients only accept it once you trust it:
+
+1. Download it under *Einstellungen → Zugänge* and compare the fingerprint shown there.
+2. **Windows:** open the file, *Install certificate* → *Local machine* → *Trusted Root Certification Authorities*. Then map the drive with `https://server:8443/`.
+3. **macOS:** open it in Keychain Access and set it to *Always trust*. Then *Finder → Go → Connect to Server*.
+
+The certificate lasts 800 days and is renewed automatically 30 days before it runs out or when `WEBDAV_HOSTS` changes. You have to import the new one then.
+
+Windows limits WebDAV downloads to 50 MB by default. To raise it to the maximum of 4 GB, set `FileSizeLimitInBytes` under `HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\WebClient\Parameters` to `4294967295` and restart the *WebClient* service.
+
+Like SFTP, written files first land in temporary storage and are transferred to Telegram when closed, and an overwritten file's old version moves to the trash.
 
 ## Encryption
 

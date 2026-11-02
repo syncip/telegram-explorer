@@ -15,6 +15,8 @@
   let totpCode = $state('')
   let sftpCurrent = $state('')
   let sftpPassword = $state('')
+  let davCurrent = $state('')
+  let davPassword = $state('')
   let blockMiB = $state(1024)
   let totpCurrent = $state('')
   let theme = $state(getTheme())
@@ -26,7 +28,7 @@
     { id: 'general', label: 'Allgemein' },
     { id: 'storage', label: 'Speicher' },
     { id: 'security', label: 'Sicherheit' },
-    { id: 'sftp', label: 'SFTP' },
+    { id: 'access', label: 'Zugänge' },
   ]
 
   function show(id) {
@@ -52,7 +54,7 @@
     try {
       await fn()
       message = success
-      current = next = sftpCurrent = sftpPassword = totpCurrent = ''
+      current = next = sftpCurrent = sftpPassword = totpCurrent = davCurrent = davPassword = ''
       await load()
     } catch (err) {
       error = err.message
@@ -70,6 +72,13 @@
     e.preventDefault()
     run(() => post('/settings/sftp', { current: sftpCurrent, password: sftpPassword }), 'SFTP-Kennwort gespeichert, SFTP ist aktiv.')
   }
+
+  function saveDav(e) {
+    e.preventDefault()
+    run(() => post('/settings/webdav', { current: davCurrent, password: davPassword }), 'WebDAV-Kennwort gespeichert, WebDAV ist aktiv.')
+  }
+  const disableDav = () => run(() => post('/settings/webdav', { current: davCurrent, password: '' }), 'WebDAV ist aus, der Port ist geschlossen.')
+  const davUrl = $derived(info?.webdavPort ? `https://${location.hostname}:${info.webdavPort}/` : '')
 
   const disableSftp = () => run(() => post('/settings/sftp', { current: sftpCurrent, password: '' }), 'SFTP ist aus, der Port ist geschlossen.')
   const MIB = 1 << 20
@@ -109,6 +118,7 @@
           <dt>Letztes Backup</dt><dd>{info.backupAt ? new Date(info.backupAt).toLocaleString('de-DE') : 'Noch keines'}</dd>
           <dt>Zwei-Faktor</dt><dd>{info.totpEnabled ? 'Aktiv' : 'Aus'}</dd>
           <dt>SFTP</dt><dd>{info.sftpEnabled ? 'Aktiv' : 'Aus'}</dd>
+          <dt>WebDAV</dt><dd>{info.webdavEnabled ? 'Aktiv' : 'Aus'}</dd>
         </dl>
         <label class="theme">Darstellung
           <select bind:value={theme} onchange={() => setTheme(theme)}>
@@ -194,6 +204,32 @@
             </div>
           </form>
         </section>
+
+        {#if info.webdavPort}
+          <section>
+            <h3>WebDAV</h3>
+            <p>{info.webdavEnabled ? `Aktiv, Benutzer „${info.username}“, Port ${info.webdavPort}, nur verschlüsselt (HTTPS).` : 'Aus, der Port ist geschlossen. Mit einem Kennwort wird WebDAV eingeschaltet.'}</p>
+            <p>WebDAV geht nicht über den Cloudflare-Tunnel. Verbinde dich direkt mit dem Server, über seine IP oder einen Namen, der auf ihn zeigt, zum Beispiel {davUrl || 'https://server:8443/'}</p>
+            {#if info.webdavCert}
+              <div class="cert">
+                <p>{info.webdavCert.own ? 'Eigenes Zertifikat' : 'Selbst erstelltes Zertifikat'} für {info.webdavCert.hosts.join(', ')}, gültig bis {new Date(info.webdavCert.notAfter * 1000).toLocaleDateString('de-DE')}.{info.webdavCert.own ? '' : ' Damit Windows, macOS oder dein Programm ihm vertraut, importiere es einmal als vertrauenswürdige Stammzertifizierungsstelle.'}</p>
+                <p>Fingerabdruck (SHA-256):</p>
+                <code>{info.webdavCert.fingerprint}</code>
+                {#if !info.webdavCert.own}<a class="button secondary" href="/api/settings/webdav/cert" download>Zertifikat herunterladen</a>{/if}
+              </div>
+            {:else if info.webdavError}
+              <p class="err">Zertifikat: {info.webdavError}</p>
+            {/if}
+            <form onsubmit={saveDav}>
+              <label>Aktuelles Web-Kennwort<input type="password" bind:value={davCurrent} required autocomplete="current-password" /></label>
+              <label>{info.webdavEnabled ? 'Neues WebDAV-Kennwort' : 'WebDAV-Kennwort'}<input type="password" bind:value={davPassword} required autocomplete="new-password" /></label>
+              <div class="row">
+                <button class="secondary">{info.webdavEnabled ? 'Kennwort ändern' : 'WebDAV einschalten'}</button>
+                {#if info.webdavEnabled}<button type="button" class="secondary" disabled={!davCurrent} onclick={disableDav}>WebDAV abschalten</button>{/if}
+              </div>
+            </form>
+          </section>
+        {/if}
       {/if}
     </div>
 
@@ -236,6 +272,17 @@
   }
   .theme {
     margin-top: 20px;
+  }
+  .cert {
+    margin-bottom: 12px;
+  }
+  a.button {
+    display: inline-flex;
+    align-items: center;
+    height: 32px;
+    padding: 0 14px;
+    text-decoration: none;
+    color: inherit;
   }
   .pair {
     display: flex;
