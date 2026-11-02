@@ -6,26 +6,22 @@ import (
 	"time"
 )
 
-const (
-	// minGap and maxGap bound the spacing between reads once Telegram asked
-	// for waits. Below minGap the spacing is dropped again.
-	minGap = 50 * time.Millisecond
-	maxGap = 2 * time.Second
-)
+// shrinkHold keeps the waits Telegram hands out for one burst from halving the
+// window more than once.
+const shrinkHold = time.Second
 
-// readGate limits how many file parts are read at once and how fast they
-// start. Telegram answers too many with waits, so the gate halves and spaces
-// the reads out on a wait, and opens up again after a run of reads without
-// one: first the spacing goes, then the number of reads grows back.
+// readGate limits how many file parts are read at once. Telegram takes a
+// varying number, so the gate learns it like a TCP congestion window: it
+// halves on a wait and grows by one for every window of answered reads. A wait
+// hits only its own part; the others go on.
 type readGate struct {
-	mu     sync.Mutex
-	limit  int
-	max    int
-	active int
-	quiet  int
-	gap    time.Duration // least time between two starts, 0 while all is calm
-	next   time.Time     // earliest start of the next read
-	free   chan struct{} // closed when a slot frees up
+	mu       sync.Mutex
+	limit    int
+	max      int
+	active   int
+	answered int
+	shrunk   time.Time
+	free     chan struct{} // closed when a slot frees up
 }
 
 func newReadGate(max int) *readGate {
@@ -37,13 +33,8 @@ func (g *readGate) acquire(ctx context.Context) error {
 		g.mu.Lock()
 		if g.active < g.limit {
 			g.active++
-			start := time.Now()
-			if g.next.After(start) {
-				start = g.next
-			}
-			g.next = start.Add(g.gap)
 			g.mu.Unlock()
-			return g.waitUntil(ctx, start)
+			return nil
 		}
 		free := g.free
 		g.mu.Unlock()
@@ -55,61 +46,36 @@ func (g *readGate) acquire(ctx context.Context) error {
 	}
 }
 
-// waitUntil holds a taken slot until its start time.
-func (g *readGate) waitUntil(ctx context.Context, start time.Time) error {
-	d := time.Until(start)
-	if d <= 0 {
-		return nil
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-t.C:
-		return nil
-	case <-ctx.Done():
-		g.mu.Lock()
-		g.active--
-		g.signal()
-		g.mu.Unlock()
-		return ctx.Err()
-	}
-}
-
-func (g *readGate) release() {
+// release frees a slot. answered says whether Telegram answered the read
+// rather than asking to wait.
+func (g *readGate) release(answered bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.active--
-	if g.quiet++; g.quiet >= 4*g.limit {
-		g.quiet = 0
-		switch {
-		case g.gap > 0:
-			if g.gap = g.gap * 3 / 4; g.gap < minGap {
-				g.gap = 0
-			}
-		case g.limit < g.max:
+	if answered {
+		if g.answered++; g.answered >= g.limit && g.limit < g.max {
 			g.limit++
+			g.answered = 0
 		}
 	}
-	g.signal()
-}
-
-// signal wakes waiting reads. g.mu must be held.
-func (g *readGate) signal() {
 	close(g.free)
 	g.free = make(chan struct{})
 }
 
-// state reports how many reads may run at once and their spacing.
-func (g *readGate) state() (int, time.Duration) {
+// state reports how many reads may run at once.
+func (g *readGate) state() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.limit, g.gap
+	return g.limit
 }
 
 func (g *readGate) shrink() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if time.Since(g.shrunk) < shrinkHold {
+		return
+	}
+	g.shrunk = time.Now()
 	g.limit = max(1, g.limit/2)
-	g.gap = min(maxGap, max(minGap, g.gap*2))
-	g.quiet = 0
+	g.answered = 0
 }

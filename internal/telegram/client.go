@@ -143,10 +143,17 @@ func (s sessionStorage) StoreSession(_ context.Context, data []byte) error {
 }
 
 // floodWait sleeps through server rate limits instead of failing the request.
-// where names the connection in the log.
+// where names the connection in the log. Requests for which pass is true get
+// the error back instead, because their caller waits without holding a slot.
 type floodWait struct {
 	where  string
 	onWait func(input bin.Encoder, what string)
+	pass   func(input bin.Encoder) bool
+}
+
+func isFileRead(input bin.Encoder) bool {
+	_, ok := input.(*tg.UploadGetFileRequest)
+	return ok
 }
 
 // method names a request the way Telegram documents it, like upload.getFile.
@@ -174,6 +181,9 @@ func (f floodWait) Handle(next tg.Invoker) telegram.InvokeFunc {
 				f.onWait(input, what)
 			}
 			log.Printf("telegram: Limit erreicht (%s), warte %s", what, d)
+			if f.pass != nil && f.pass(input) {
+				return err
+			}
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -252,7 +262,7 @@ func (c *Client) filePool(ctx context.Context, dc int) (*tg.Client, error) {
 		return nil, err
 	}
 	where := fmt.Sprintf("Dateiverbindungen DC %d", dc)
-	pool := tg.NewClient(floodWait{where: where, onWait: c.flooded}.Handle(c.transferRetry().Handle(conns)))
+	pool := tg.NewClient(floodWait{where: where, onWait: c.flooded, pass: isFileRead}.Handle(c.transferRetry().Handle(conns)))
 	c.pools[dc] = pool
 	c.Store.Log(store.LevelInfo, store.KindTelegram, "%d Dateiverbindungen zu Rechenzentrum %d aufgebaut", c.conns(), dc)
 	log.Printf("telegram: %d Dateiverbindungen zu Rechenzentrum %d aufgebaut", c.conns(), dc)
@@ -285,9 +295,8 @@ func (c *Client) countRead(n int) {
 	if took < time.Minute {
 		return
 	}
-	limit, gap := c.gate().state()
-	log.Printf("telegram: Download der letzten %ds: %d Teile, %.1f MB/s, %d Bremsen, %d Verbindungen, zuletzt %d von %d Abrufen gleichzeitig, Abstand %s",
-		int(took.Seconds()), c.statsParts, float64(c.statsBytes)/took.Seconds()/1e6, c.statsFloods, c.conns(), limit, c.gate().max, gap)
+	log.Printf("telegram: Download der letzten %ds: %d Teile, %.1f MB/s, %d Bremsen, %d Verbindungen, zuletzt %d von %d Abrufen gleichzeitig",
+		int(took.Seconds()), c.statsParts, float64(c.statsBytes)/took.Seconds()/1e6, c.statsFloods, c.conns(), c.gate().state(), c.gate().max)
 	c.statsStart, c.statsParts, c.statsBytes, c.statsFloods = time.Time{}, 0, 0, 0
 }
 
@@ -295,7 +304,7 @@ func (c *Client) countRead(n int) {
 // limit hit which request, because a premium account should not see
 // FLOOD_PREMIUM_WAIT.
 func (c *Client) flooded(input bin.Encoder, what string) {
-	if _, ok := input.(*tg.UploadGetFileRequest); ok {
+	if isFileRead(input) {
 		c.gate().shrink()
 		c.statsMu.Lock()
 		c.statsFloods++
@@ -694,12 +703,13 @@ func (c *Client) ReadPart(ctx context.Context, msgID int, part int64) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
-	fresh := false
-	for attempt := 0; ; attempt++ {
+	fresh, refreshed := false, false
+	for {
 		ref, err := c.location(ctx, api, ch, msgID, fresh)
 		if err != nil {
 			return nil, err
 		}
+		fresh = false
 		reader := api
 		if pool, err := c.filePool(ctx, ref.dc); err == nil {
 			reader = pool
@@ -716,9 +726,19 @@ func (c *Client) ReadPart(ctx context.Context, msgID int, part int64) ([]byte, e
 			log.Printf("telegram: Nachricht %d liegt nicht in Rechenzentrum %d, lese über die Hauptverbindung", msgID, ref.dc)
 			res, err = api.UploadGetFile(ctx, req)
 		}
-		c.gate().release()
-		if tgerr.Is(err, "FILE_REFERENCE_EXPIRED", "FILE_REFERENCE_INVALID") && attempt == 0 {
-			fresh = true
+		if d, ok := tgerr.AsFloodWait(err); ok && d <= maxFloodWait {
+			// Only this part waits; its slot goes to the next one meanwhile.
+			c.gate().release(false)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(d):
+			}
+			continue
+		}
+		c.gate().release(err == nil)
+		if tgerr.Is(err, "FILE_REFERENCE_EXPIRED", "FILE_REFERENCE_INVALID") && !refreshed {
+			fresh, refreshed = true, true
 			continue
 		}
 		if err != nil {
