@@ -126,8 +126,18 @@ func (s sessionStorage) StoreSession(_ context.Context, data []byte) error {
 }
 
 // floodWait sleeps through server rate limits instead of failing the request.
+// where names the connection in the log.
 type floodWait struct {
-	onWait func(input bin.Encoder, kind string)
+	where  string
+	onWait func(input bin.Encoder, what string)
+}
+
+// method names a request the way Telegram documents it, like upload.getFile.
+func method(input bin.Encoder) string {
+	if t, ok := input.(interface{ TypeName() string }); ok {
+		return t.TypeName()
+	}
+	return fmt.Sprintf("%T", input)
 }
 
 func (f floodWait) Handle(next tg.Invoker) telegram.InvokeFunc {
@@ -142,14 +152,15 @@ func (f floodWait) Handle(next tg.Invoker) telegram.InvokeFunc {
 			if e, ok := tgerr.As(err); ok {
 				kind = e.Type
 			}
+			what := fmt.Sprintf("%s bei %s über %s", kind, method(input), f.where)
 			if f.onWait != nil {
-				f.onWait(input, kind)
+				f.onWait(input, what)
 			}
-			log.Printf("telegram: Limit erreicht (%s), warte %s", kind, d)
+			log.Printf("telegram: Limit erreicht (%s), warte %s", what, d)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(d + time.Second):
+			case <-time.After(max(d, 100*time.Millisecond)):
 			}
 		}
 	}
@@ -223,9 +234,11 @@ func (c *Client) filePool(ctx context.Context, dc int) (*tg.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	pool := tg.NewClient(floodWait{onWait: c.flooded}.Handle(c.transferRetry().Handle(conns)))
+	where := fmt.Sprintf("Dateiverbindungen DC %d", dc)
+	pool := tg.NewClient(floodWait{where: where, onWait: c.flooded}.Handle(c.transferRetry().Handle(conns)))
 	c.pools[dc] = pool
 	c.Store.Log(store.LevelInfo, store.KindTelegram, "%d Dateiverbindungen zu Rechenzentrum %d aufgebaut", transferConns, dc)
+	log.Printf("telegram: %d Dateiverbindungen zu Rechenzentrum %d aufgebaut", transferConns, dc)
 	return pool, nil
 }
 
@@ -235,8 +248,9 @@ func (c *Client) gate() *readGate {
 }
 
 // flooded notes a rate limit. File reads slow down, and the log says which
-// limit it was, because a premium account should not see FLOOD_PREMIUM_WAIT.
-func (c *Client) flooded(input bin.Encoder, kind string) {
+// limit hit which request, because a premium account should not see
+// FLOOD_PREMIUM_WAIT.
+func (c *Client) flooded(input bin.Encoder, what string) {
 	if _, ok := input.(*tg.UploadGetFileRequest); ok {
 		c.gate().shrink()
 	}
@@ -245,7 +259,7 @@ func (c *Client) flooded(input bin.Encoder, kind string) {
 	if c.floodCounts == nil {
 		c.floodCounts = map[string]int{}
 	}
-	c.floodCounts[kind]++
+	c.floodCounts[what]++
 	if time.Since(c.floodLogged) < time.Minute {
 		return
 	}
@@ -255,8 +269,10 @@ func (c *Client) flooded(input bin.Encoder, kind string) {
 	}
 	sort.Strings(parts)
 	note := ""
-	if c.floodCounts["FLOOD_PREMIUM_WAIT"] > 0 {
-		note = ". FLOOD_PREMIUM_WAIT ist die Bremse für Konten ohne Premium"
+	for k := range c.floodCounts {
+		if strings.HasPrefix(k, "FLOOD_PREMIUM_WAIT") {
+			note = ". FLOOD_PREMIUM_WAIT ist die Bremse für Konten ohne Premium"
+		}
 	}
 	c.Store.Log(store.LevelWarn, store.KindTelegram, "Telegram bremst die Übertragung: %s%s", strings.Join(parts, ", "), note)
 	c.floodCounts = map[string]int{}
@@ -306,7 +322,7 @@ func (c *Client) Run(ctx context.Context) {
 func (c *Client) runOnce(ctx context.Context) error {
 	client := telegram.NewClient(c.AppID, c.AppHash, telegram.Options{
 		SessionStorage: sessionStorage{c},
-		Middlewares:    []telegram.Middleware{floodWait{onWait: c.flooded}, c.transferRetry()},
+		Middlewares:    []telegram.Middleware{floodWait{where: "Hauptverbindung", onWait: c.flooded}, c.transferRetry()},
 		Device:         telegram.DeviceConfig{DeviceModel: "Telegram Explorer", SystemVersion: "Docker", AppVersion: "1.0"},
 	})
 	return client.Run(ctx, func(ctx context.Context) error {
@@ -346,6 +362,7 @@ func (c *Client) finishLogin(ctx context.Context, user *tg.User) error {
 		premium = "mit Premium"
 	}
 	c.Store.Log(store.LevelInfo, store.KindTelegram, "Verbunden als %s, Konto %s", name, premium)
+	log.Printf("telegram: verbunden, Konto %s", premium)
 	return nil
 }
 
@@ -649,6 +666,7 @@ func (c *Client) ReadPart(ctx context.Context, msgID int, part int64) ([]byte, e
 		res, err := reader.UploadGetFile(ctx, req)
 		if tgerr.Is(err, "FILE_MIGRATE") {
 			// The main connection knows how to follow a moved file.
+			log.Printf("telegram: Nachricht %d liegt nicht in Rechenzentrum %d, lese über die Hauptverbindung", msgID, ref.dc)
 			res, err = api.UploadGetFile(ctx, req)
 		}
 		c.gate().release()
