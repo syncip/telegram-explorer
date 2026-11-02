@@ -1,6 +1,7 @@
 <script>
   import { api, post } from './api.js'
   import Dialog from './Dialog.svelte'
+  import { getTheme, setTheme } from './theme.js'
 
   let { app, onclose } = $props()
 
@@ -16,6 +17,9 @@
   let sftpPassword = $state('')
   let blockMiB = $state(1024)
   let totpCurrent = $state('')
+  let theme = $state(getTheme())
+  let limitUp = $state(0)
+  let limitDown = $state(0)
   let tab = $state('general')
 
   const TABS = [
@@ -35,6 +39,8 @@
   async function load() {
     info = await api('/settings')
     blockMiB = info.blockMiB
+    limitUp = toMiB(info.limitUp)
+    limitDown = toMiB(info.limitDown)
   }
 
   $effect(() => {
@@ -66,6 +72,12 @@
   }
 
   const disableSftp = () => run(() => post('/settings/sftp', { current: sftpCurrent, password: '' }), 'SFTP ist aus, der Port ist geschlossen.')
+  const MIB = 1 << 20
+  const toMiB = (bytes) => Math.round((bytes / MIB) * 10) / 10
+  const saveLimits = (e) => {
+    e.preventDefault()
+    run(() => post('/settings/limits', { up: Math.round(Number(limitUp) * MIB), down: Math.round(Number(limitDown) * MIB) }), 'Geschwindigkeit gespeichert.')
+  }
   const saveBlocks = () => run(() => post('/settings/blocks', { mib: Number(blockMiB) }), 'Segmentgröße gespeichert. Sie gilt für neue Uploads.')
 
   const beginTotp = () => run(async () => (totp = await post('/settings/totp/begin')), '')
@@ -98,6 +110,13 @@
           <dt>Zwei-Faktor</dt><dd>{info.totpEnabled ? 'Aktiv' : 'Aus'}</dd>
           <dt>SFTP</dt><dd>{info.sftpEnabled ? 'Aktiv' : 'Aus'}</dd>
         </dl>
+        <label class="theme">Darstellung
+          <select bind:value={theme} onchange={() => setTheme(theme)}>
+            <option value="auto">Automatisch (wie das System)</option>
+            <option value="light">Hell</option>
+            <option value="dark">Dunkel</option>
+          </select>
+        </label>
       {:else if tab === 'storage'}
         <section>
           <h3>Segmentgröße</h3>
@@ -109,6 +128,18 @@
               {#each BLOCK_SIZES as size}<option value={size}>{size} MiB{size === 1024 ? ' (Standard)' : ''}</option>{/each}
             </select>
           </label>
+        </section>
+
+        <section>
+          <h3>Geschwindigkeit</h3>
+          <p>Begrenzt den Verkehr zwischen Server und Telegram, 0 heißt unbegrenzt. Schnell umstellen geht auch unten rechts in der Statusleiste.</p>
+          <form onsubmit={saveLimits}>
+            <div class="pair">
+              <label>Upload in MB/s<input type="number" min="0" step="0.1" required bind:value={limitUp} /></label>
+              <label>Download in MB/s<input type="number" min="0" step="0.1" required bind:value={limitDown} /></label>
+            </div>
+            <button class="secondary">Speichern</button>
+          </form>
         </section>
 
         <section>
@@ -202,6 +233,17 @@
   }
   dt {
     color: var(--muted);
+  }
+  .theme {
+    margin-top: 20px;
+  }
+  .pair {
+    display: flex;
+    gap: 12px;
+  }
+  .pair label {
+    flex: 1;
+    min-width: 0;
   }
   dd {
     margin: 0;

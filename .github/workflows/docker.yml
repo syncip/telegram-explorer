@@ -39,3 +39,13 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - uses: peter-evans/dockerhub-description@v4
+        if: env.PUBLISH == 'true' && github.ref == 'refs/heads/main'
+        with:
+          username: r600
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.IMAGE }}
+          short-description: Your Telegram account as file storage, with a web explorer, encryption and SFTP.
+          readme-filepath: ./README.md
+          # Turns relative links and images into absolute GitHub links.
+          enable-url-completion: true

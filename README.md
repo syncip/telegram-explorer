@@ -25,10 +25,11 @@ A self-hosted file manager with a Windows Explorer look that uses your own Teleg
 
 ## Features
 
-- **Explorer interface:** folder tree, list and grid view, drag and drop, cut and paste, context menus, search, preview, light and dark mode, and a layout that works on phones.
+- **Explorer interface:** folder tree, list and grid view, drag and drop, cut and paste, context menus, search, preview, light and dark mode (following the system or chosen by hand), and a layout that works on phones.
 - **Large files:** files of any size are split into segments. Uploads resume after an interruption and failed transfers are retried. Each file shows whether it is on its way to the server, on its way to Telegram or finished.
 - **Optional encryption:** encrypted files are unreadable to Telegram. Unencrypted files stay normal documents you can download directly in Telegram.
 - **Sharing:** public links with optional password, a lifetime from one minute to 100 years, and a download limit. Links open images, videos and PDFs directly. Shared files are marked in the list, and a share can be changed or ended at any time, including a new link.
+- **Speed limits:** separate limits for traffic to and from Telegram. The status bar shows the current speed and switches the limit with one click.
 - **SFTP:** browse, upload and download with any SFTP client. It stays off until you switch it on.
 - **File checks:** a quick check asks Telegram whether a file still exists, without a download. A full check downloads it and compares checksums.
 - **Configurable columns:** date, type, size, encryption, sharing, state, file count, segment count, MD5 and SHA-256.
@@ -148,7 +149,7 @@ Settings are read from environment variables, usually through `.env`.
 | `HTTP_ADDR` | `:8080` | Listen address of the web interface. |
 | `SFTP_ADDR` | `:2222` | Listen address of the SFTP server. |
 
-Everything else is set in the web interface, including the SFTP password, the segment size and two-factor authentication.
+Everything else is set in the web interface, including the SFTP password, the segment size, speed limits and two-factor authentication.
 
 ## Reverse proxy
 
@@ -170,6 +171,8 @@ proxy_request_buffering off;
 proxy_buffering off;
 proxy_read_timeout 1h;
 ```
+
+**Cloudflare Tunnel** works as well. The browser uploads in 8 MiB pieces, below Cloudflare's 100 MB request limit, and the server answers each piece within seconds, also the last one of a large file: checksums are computed afterwards in the background.
 
 To run without a proxy, set `TRUST_PROXY=0` and change the port line to `8080:8080`. Passwords then travel over the network unencrypted, which is only acceptable on a trusted home network.
 

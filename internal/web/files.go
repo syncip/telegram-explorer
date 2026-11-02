@@ -213,7 +213,10 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, st)
+	return writeJSON(w, struct {
+		*store.Stats
+		Speed files.Speed `json:"speed"`
+	}{st, s.Engine.Speed()})
 }
 
 func (s *Server) logs(w http.ResponseWriter, r *http.Request) error {
@@ -683,7 +686,9 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	backup, _ := s.Engine.Store.Setting("backup_at")
-	return writeJSON(w, map[string]any{"username": u.Username, "sftpEnabled": u.SFTP != "", "totpEnabled": u.TOTP != "", "backupAt": string(backup), "blockMiB": s.Engine.BlockMiB()})
+	speed := s.Engine.Speed()
+	return writeJSON(w, map[string]any{"username": u.Username, "sftpEnabled": u.SFTP != "", "totpEnabled": u.TOTP != "", "backupAt": string(backup), "blockMiB": s.Engine.BlockMiB(),
+		"limitUp": speed.LimitUp, "limitDown": speed.LimitDown})
 }
 
 // confirmPassword is required for every change to the credentials, so an
@@ -797,6 +802,28 @@ func (s *Server) setBlocks(w http.ResponseWriter, r *http.Request) error {
 	}
 	s.Engine.Store.Log(store.LevelInfo, store.KindSystem, "Segmentgröße auf %d MiB gesetzt", in.MiB)
 	return writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (s *Server) setLimits(w http.ResponseWriter, r *http.Request) error {
+	var in struct{ Up, Down int64 }
+	if err := readJSON(r, &in); err != nil {
+		return err
+	}
+	if in.Up < 0 || in.Down < 0 {
+		return badRequest("ungültige Werte")
+	}
+	if err := s.Engine.SetLimits(in.Up, in.Down); err != nil {
+		return err
+	}
+	s.Engine.Store.Log(store.LevelInfo, store.KindSystem, "Geschwindigkeit begrenzt: Upload %s, Download %s", limitText(in.Up), limitText(in.Down))
+	return writeJSON(w, map[string]bool{"ok": true})
+}
+
+func limitText(rate int64) string {
+	if rate == 0 {
+		return "unbegrenzt"
+	}
+	return humanSize(rate) + "/s"
 }
 
 func (s *Server) totpBegin(w http.ResponseWriter, r *http.Request) error {

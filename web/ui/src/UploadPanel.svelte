@@ -14,6 +14,7 @@
   })
 
   const STEPS = ['Server', 'Telegram', 'Fertig']
+  const AUTO_CLOSE = 10000
   const ACTIVE = ['queued', 'running', 'server']
 
   const visible = $derived(uploads.items.filter((i) => i.state !== 'canceled'))
@@ -42,7 +43,7 @@
     if (item.state === 'finished') return 'Bei Telegram gespeichert, Größe bestätigt'
     if (item.state === 'running') {
       if (item.error) return item.error
-      if (hashing(item)) return 'Komplett auf dem Server, Prüfsumme wird berechnet'
+      if (hashing(item)) return 'Komplett auf dem Server, wird abgeschlossen'
       return line(item.key, item.sent, item.size, 'Zum Server')
     }
     const job = item.job
@@ -79,10 +80,22 @@
     clearFinished()
     if (showVerify && !verify.running) stopVerify()
   }
+
+  // Once nothing runs and nothing went wrong, the panel clears itself after a
+  // while, unless the pointer rests on it.
+  let hovered = $state(false)
+  const failures = $derived(visible.some(failed) || (showVerify && !verify.running && (verify.bad?.length || verify.failed?.length)))
+  const signature = $derived(JSON.stringify([visible.map((i) => [i.key, i.state, i.sent, i.job?.sent]), verify?.done, verify?.running]))
+  $effect(() => {
+    signature
+    if (total === 0 || active > 0 || failures || hovered) return
+    const timer = setTimeout(clearDone, AUTO_CLOSE)
+    return () => clearTimeout(timer)
+  })
 </script>
 
 {#if total > 0}
-  <section class="panel" aria-label="Übertragungen">
+  <section class="panel" aria-label="Übertragungen" onmouseenter={() => (hovered = true)} onmouseleave={() => (hovered = false)}>
     <header>
       <button class="title" onclick={() => (collapsed = !collapsed)} aria-expanded={!collapsed}>
         {active ? `Übertragungen (${active} aktiv)` : 'Übertragungen abgeschlossen'}{remaining ? `, ${remaining}` : ''}

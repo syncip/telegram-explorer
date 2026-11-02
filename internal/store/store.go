@@ -725,6 +725,12 @@ func (s *Store) MarkReady(id int64) error {
 	return err
 }
 
+// SetHashes records the checksums of a file.
+func (s *Store) SetHashes(id int64, sha, md string) error {
+	_, err := s.db.Exec(`UPDATE nodes SET sha256 = ?, md5 = ? WHERE id = ?`, sha, md, id)
+	return err
+}
+
 // AddBlock records an uploaded block.
 func (s *Store) AddBlock(node int64, b Block) error {
 	_, err := s.db.Exec(`INSERT INTO blocks(node_id, idx, msg_id, size) VALUES (?, ?, ?, ?)`, node, b.Index, b.MsgID, b.Size)

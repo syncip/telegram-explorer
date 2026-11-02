@@ -82,6 +82,9 @@ type Engine struct {
 	started  atomic.Bool
 	verifier verifier
 	ctx      context.Context
+
+	up, down           Throttle
+	upMeter, downMeter Meter
 }
 
 // New creates an engine that keeps stage files below dataDir.
@@ -137,15 +140,13 @@ func (e *Engine) Commit(parent int64, name, stagePath string, encrypted bool, mt
 	if err != nil {
 		return nil, err
 	}
-	sha, md, err := hashFile(stagePath)
-	if err != nil {
-		return nil, err
-	}
+	// The checksums follow in the background: hashing gigabytes here would
+	// keep the client waiting longer than a proxy like Cloudflare allows.
 	if mtime == 0 {
 		mtime = time.Now().Unix()
 	}
 	n := &store.Node{ParentID: parent, Name: name, Size: info.Size(), Mime: MimeOf(name), Encrypted: encrypted,
-		State: store.StatePending, SHA256: sha, MD5: md, StagePath: stagePath, MTime: mtime}
+		State: store.StatePending, StagePath: stagePath, MTime: mtime}
 	if n.Size == 0 {
 		n.State, n.StagePath = store.StateReady, ""
 	}
@@ -201,6 +202,8 @@ func (e *Engine) Start(ctx context.Context) {
 	}
 	e.ctx = ctx
 	e.cleanStage()
+	e.loadLimits()
+	go e.meterLoop(ctx)
 	go e.uploadLoop(ctx)
 	go e.janitorLoop(ctx)
 }
@@ -319,6 +322,15 @@ func (e *Engine) upload(ctx context.Context, n *store.Node) error {
 		return err
 	}
 	defer f.Close()
+	if n.SHA256 == "" {
+		sha, md, err := hashFile(n.StagePath)
+		if err != nil {
+			return err
+		}
+		if err := e.Store.SetHashes(n.ID, sha, md); err != nil {
+			return err
+		}
+	}
 	done, err := e.Store.Blocks(n.ID)
 	if err != nil {
 		return err
@@ -351,7 +363,7 @@ func (e *Engine) upload(ctx context.Context, n *store.Node) error {
 		start := int64(idx) * l.blockParts * l.segPlain
 		length := min(l.blockParts*l.segPlain, n.Size-start)
 		name, r, size := blockSource(f, n, l, idx, start, length, fc)
-		msgID, err := e.Backend.Put(ctx, name, blockMime(n), r, size, func(s int64) { sent.Store(finished + s) })
+		msgID, err := e.Backend.Put(ctx, name, blockMime(n), &pacedReader{ctx: ctx, r: r, e: e}, size, func(s int64) { sent.Store(finished + s) })
 		if err != nil {
 			return fmt.Errorf("Block %d: %w", idx, err)
 		}

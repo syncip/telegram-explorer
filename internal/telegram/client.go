@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +42,9 @@ const (
 
 	transferRetries = 8
 	transferDelay   = time.Second
+
+	// readSlots is the most file parts read at once.
+	readSlots = 8
 )
 
 // Login steps.
@@ -90,6 +94,13 @@ type Client struct {
 
 	poolMu sync.Mutex
 	pools  map[int]*tg.Client // data center -> file connections
+
+	reads     *readGate
+	readsOnce sync.Once
+
+	floodMu     sync.Mutex
+	floodCounts map[string]int
+	floodLogged time.Time
 }
 
 // sessionStorage keeps the MTProto session sealed: it grants full account access.
@@ -115,9 +126,11 @@ func (s sessionStorage) StoreSession(_ context.Context, data []byte) error {
 }
 
 // floodWait sleeps through server rate limits instead of failing the request.
-type floodWait struct{}
+type floodWait struct {
+	onWait func(input bin.Encoder, kind string)
+}
 
-func (floodWait) Handle(next tg.Invoker) telegram.InvokeFunc {
+func (f floodWait) Handle(next tg.Invoker) telegram.InvokeFunc {
 	return func(ctx context.Context, input bin.Encoder, output bin.Decoder) error {
 		for {
 			err := next.Invoke(ctx, input, output)
@@ -125,7 +138,14 @@ func (floodWait) Handle(next tg.Invoker) telegram.InvokeFunc {
 			if !ok || d > maxFloodWait {
 				return err
 			}
-			log.Printf("telegram: Limit erreicht, warte %s", d)
+			kind := "FLOOD_WAIT"
+			if e, ok := tgerr.As(err); ok {
+				kind = e.Type
+			}
+			if f.onWait != nil {
+				f.onWait(input, kind)
+			}
+			log.Printf("telegram: Limit erreicht (%s), warte %s", kind, d)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -203,10 +223,44 @@ func (c *Client) filePool(ctx context.Context, dc int) (*tg.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	pool := tg.NewClient(floodWait{}.Handle(c.transferRetry().Handle(conns)))
+	pool := tg.NewClient(floodWait{onWait: c.flooded}.Handle(c.transferRetry().Handle(conns)))
 	c.pools[dc] = pool
 	c.Store.Log(store.LevelInfo, store.KindTelegram, "%d Dateiverbindungen zu Rechenzentrum %d aufgebaut", transferConns, dc)
 	return pool, nil
+}
+
+func (c *Client) gate() *readGate {
+	c.readsOnce.Do(func() { c.reads = newReadGate(readSlots) })
+	return c.reads
+}
+
+// flooded notes a rate limit. File reads slow down, and the log says which
+// limit it was, because a premium account should not see FLOOD_PREMIUM_WAIT.
+func (c *Client) flooded(input bin.Encoder, kind string) {
+	if _, ok := input.(*tg.UploadGetFileRequest); ok {
+		c.gate().shrink()
+	}
+	c.floodMu.Lock()
+	defer c.floodMu.Unlock()
+	if c.floodCounts == nil {
+		c.floodCounts = map[string]int{}
+	}
+	c.floodCounts[kind]++
+	if time.Since(c.floodLogged) < time.Minute {
+		return
+	}
+	var parts []string
+	for k, n := range c.floodCounts {
+		parts = append(parts, fmt.Sprintf("%s %d×", k, n))
+	}
+	sort.Strings(parts)
+	note := ""
+	if c.floodCounts["FLOOD_PREMIUM_WAIT"] > 0 {
+		note = ". FLOOD_PREMIUM_WAIT ist die Bremse für Konten ohne Premium"
+	}
+	c.Store.Log(store.LevelWarn, store.KindTelegram, "Telegram bremst die Übertragung: %s%s", strings.Join(parts, ", "), note)
+	c.floodCounts = map[string]int{}
+	c.floodLogged = time.Now()
 }
 
 func (c *Client) setStatus(s Status) {
@@ -252,7 +306,7 @@ func (c *Client) Run(ctx context.Context) {
 func (c *Client) runOnce(ctx context.Context) error {
 	client := telegram.NewClient(c.AppID, c.AppHash, telegram.Options{
 		SessionStorage: sessionStorage{c},
-		Middlewares:    []telegram.Middleware{floodWait{}, c.transferRetry()},
+		Middlewares:    []telegram.Middleware{floodWait{onWait: c.flooded}, c.transferRetry()},
 		Device:         telegram.DeviceConfig{DeviceModel: "Telegram Explorer", SystemVersion: "Docker", AppVersion: "1.0"},
 	})
 	return client.Run(ctx, func(ctx context.Context) error {
@@ -287,7 +341,11 @@ func (c *Client) finishLogin(ctx context.Context, user *tg.User) error {
 		name += " (@" + user.Username + ")"
 	}
 	c.setStatus(Status{Step: StepReady, User: name})
-	c.Store.Log(store.LevelInfo, store.KindTelegram, "Verbunden als %s", name)
+	premium := "ohne Premium"
+	if user.Premium {
+		premium = "mit Premium"
+	}
+	c.Store.Log(store.LevelInfo, store.KindTelegram, "Verbunden als %s, Konto %s", name, premium)
 	return nil
 }
 
@@ -585,11 +643,15 @@ func (c *Client) ReadPart(ctx context.Context, msgID int, part int64) ([]byte, e
 			log.Printf("telegram: Dateiverbindungen zu Rechenzentrum %d: %v", ref.dc, err)
 		}
 		req := &tg.UploadGetFileRequest{Location: ref.location, Offset: part * files.PartSize, Limit: files.PartSize}
+		if err := c.gate().acquire(ctx); err != nil {
+			return nil, err
+		}
 		res, err := reader.UploadGetFile(ctx, req)
 		if tgerr.Is(err, "FILE_MIGRATE") {
 			// The main connection knows how to follow a moved file.
 			res, err = api.UploadGetFile(ctx, req)
 		}
+		c.gate().release()
 		if tgerr.Is(err, "FILE_REFERENCE_EXPIRED", "FILE_REFERENCE_INVALID") && attempt == 0 {
 			fresh = true
 			continue

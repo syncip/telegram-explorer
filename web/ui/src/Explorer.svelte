@@ -10,6 +10,7 @@
   import Settings from './Settings.svelte'
   import ShareDialog from './ShareDialog.svelte'
   import Shares from './Shares.svelte'
+  import SpeedControl from './SpeedControl.svelte'
   import TreeNode from './TreeNode.svelte'
   import UploadPanel from './UploadPanel.svelte'
 
@@ -875,6 +876,7 @@
         {#if stats.corrupted}<span class="alarm">{stats.corrupted} beschädigt</span>{/if}
       </span>
     {/if}
+    {#if stats?.speed}<SpeedControl speed={stats.speed} onchange={poll} onerror={(msg) => (error = msg)} />{/if}
     <span class="tg" title={app.telegram?.user}>{pendingTotal ? `${pendingTotal} Übertragung${pendingTotal === 1 ? '' : 'en'} aktiv` : 'Alles synchron'}</span>
   </footer>
 </div>
@@ -1151,6 +1153,10 @@
     cursor: col-resize;
     z-index: 2;
     touch-action: none;
+  }
+  /* The last handle would otherwise stick out and cause a scrollbar. */
+  th:last-child .grip {
+    right: 0;
   }
   th.right button,
   td.right {

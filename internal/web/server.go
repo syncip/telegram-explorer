@@ -206,6 +206,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/settings/passphrase", s.open(s.setPassphrase))
 	mux.HandleFunc("POST /api/settings/sftp", s.open(s.setSFTP))
 	mux.HandleFunc("POST /api/settings/blocks", s.open(s.setBlocks))
+	mux.HandleFunc("POST /api/settings/limits", s.open(s.setLimits))
 	mux.HandleFunc("POST /api/settings/totp/begin", s.open(s.totpBegin))
 	mux.HandleFunc("POST /api/settings/totp/confirm", s.open(s.totpConfirm))
 	mux.HandleFunc("POST /api/settings/totp/disable", s.open(s.totpDisable))

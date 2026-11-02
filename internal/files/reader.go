@@ -221,10 +221,14 @@ func (r *Reader) load(seg int64) ([]byte, error) {
 	if idx >= int64(len(r.blocks)) {
 		return nil, fmt.Errorf("Block %d fehlt", idx)
 	}
+	if err := r.e.down.Wait(r.ctx, PartSize); err != nil {
+		return nil, err
+	}
 	data, err := r.e.Backend.ReadPart(r.ctx, r.blocks[idx].MsgID, seg%r.layout.blockParts)
 	if err != nil {
 		return nil, err
 	}
+	r.e.downMeter.Add(len(data))
 	if r.cipher == nil {
 		return data, nil
 	}
