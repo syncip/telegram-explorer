@@ -23,6 +23,9 @@
   let limitUp = $state(0)
   let limitDown = $state(0)
   let tab = $state('general')
+  let bots = $state([])
+  let botToken = $state('')
+  let botBusy = $state(false)
 
   const TABS = [
     { id: 'general', label: 'Allgemein' },
@@ -43,6 +46,50 @@
     blockMiB = info.blockMiB
     limitUp = toMiB(info.limitUp)
     limitDown = toMiB(info.limitDown)
+    if (info.bots) bots = await api('/settings/bots')
+  }
+
+  // Bots connect in the background, so their state is fetched again while
+  // the storage tab is open.
+  $effect(() => {
+    if (tab !== 'storage' || !info?.bots) return
+    const timer = setInterval(async () => {
+      try {
+        bots = await api('/settings/bots')
+      } catch {}
+    }, 4000)
+    return () => clearInterval(timer)
+  })
+
+  const BOT_STATES = { connecting: 'verbindet', ready: 'bereit', error: 'Fehler' }
+  const botName = (b) => (b.username ? '@' + b.username : `Bot ${b.id}`)
+
+  async function botAction(fn) {
+    message = error = ''
+    botBusy = true
+    try {
+      const b = await fn()
+      if (!b) message = 'Bot entfernt. Bei @BotFather besteht er weiter, dort kannst du ihn mit /deletebot löschen.'
+      else if (b.state === 'error') error = `${botName(b)}: ${b.error}`
+      else message = b.state === 'ready' ? `${botName(b)} lädt ab jetzt mit.` : `${botName(b)} verbindet sich noch.`
+      botToken = ''
+    } catch (err) {
+      error = err.message
+    }
+    botBusy = false
+    bots = await api('/settings/bots')
+  }
+  const createBot = () => botAction(() => post('/settings/bots'))
+  function addBot(e) {
+    e.preventDefault()
+    botAction(() => post('/settings/bots', { token: botToken.trim() }))
+  }
+  function removeBot(b) {
+    if (!confirm(`${botName(b)} aus dem Speicherkanal entfernen?`)) return
+    botAction(async () => {
+      await api(`/settings/bots/${b.id}`, { method: 'DELETE' })
+      return null
+    })
   }
 
   $effect(() => {
@@ -151,6 +198,37 @@
             <button class="secondary">Speichern</button>
           </form>
         </section>
+
+        {#if info.bots}
+          <section>
+            <h3>Download-Helfer</h3>
+            <p>Telegram erlaubt jeder Anmeldung etwa 5 MB/s beim Herunterladen. Jeder Bot, der Admin im Speicherkanal ist, lädt mit und bringt ungefähr so viel dazu. Die App legt Bots bei @BotFather an und trägt sie im Kanal ein.</p>
+            {#if bots.length}
+              <ul class="bots">
+                {#each bots as b (b.id)}
+                  <li>
+                    <span class="name">{botName(b)}</span>
+                    <span class="state {b.state}" title={b.error ?? ''}>{BOT_STATES[b.state] ?? b.state}{b.error ? `: ${b.error}` : ''}</span>
+                    {#if b.source === 'env'}
+                      <span class="src">aus .env</span>
+                    {:else}
+                      <button class="secondary" disabled={botBusy} onclick={() => removeBot(b)}>Entfernen</button>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p>Noch keine Download-Helfer.</p>
+            {/if}
+            <div class="row">
+              <button class="secondary" disabled={botBusy} onclick={createBot}>{botBusy ? 'Bitte warten …' : 'Neuen Bot anlegen'}</button>
+            </div>
+            <form class="token" onsubmit={addBot}>
+              <label>Oder Token eines vorhandenen Bots<input bind:value={botToken} required placeholder="123456789:ABC…" autocomplete="off" spellcheck="false" /></label>
+              <button class="secondary" disabled={botBusy}>Hinzufügen</button>
+            </form>
+          </section>
+        {/if}
 
         <section>
           <h3>Backup der Metadaten</h3>
@@ -334,6 +412,38 @@
   }
   .ok {
     color: var(--text);
+  }
+  .bots {
+    list-style: none;
+    margin: 0 0 10px;
+    padding: 0;
+  }
+  .bots li {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 4px 0;
+  }
+  .bots .name {
+    font-weight: 600;
+  }
+  .bots .state {
+    flex: 1;
+    min-width: 0;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .bots .state.error {
+    color: var(--danger);
+  }
+  .bots .src {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .token {
+    margin-top: 12px;
   }
   .err {
     color: var(--danger);

@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gotd/td/bin"
@@ -95,23 +96,29 @@ type Client struct {
 	phone    string
 	codeHash string
 
-	docs sync.Map // msg id -> docRef
+	// BotTokens are helper bots from the environment. More are added in the
+	// web interface.
+	BotTokens []string
 
-	poolMu sync.Mutex
-	pools  map[int]*tg.Client // data center -> file connections
+	acct     *fetcher // file reads through the account
+	acctOnce sync.Once
+	botsMu   sync.Mutex
+	bots     []*bot
+	botCtx   context.Context
+	createMu sync.Mutex
 
-	reads     *readGate
-	readsOnce sync.Once
+	wakeMu sync.Mutex
+	wakeCh chan struct{}
+	turn   atomic.Uint64
 
 	floodMu     sync.Mutex
 	floodCounts map[string]int
 	floodLogged time.Time
 
-	statsMu     sync.Mutex
-	statsStart  time.Time
-	statsParts  int
-	statsBytes  int64
-	statsFloods int
+	statsMu    sync.Mutex
+	statsStart time.Time
+	statsParts int
+	statsBytes int64
 }
 
 func (c *Client) conns() int {
@@ -239,78 +246,10 @@ func (c *Client) transferRetry() transferRetry {
 	}}
 }
 
-// filePool returns the file connections to a data center. They bypass the
-// client's middlewares, so these are applied here.
-func (c *Client) filePool(ctx context.Context, dc int) (*tg.Client, error) {
-	c.mu.RLock()
-	client := c.tg
-	c.mu.RUnlock()
-	c.poolMu.Lock()
-	defer c.poolMu.Unlock()
-	if pool, ok := c.pools[dc]; ok {
-		return pool, nil
-	}
-	var (
-		conns telegram.CloseInvoker
-		err   error
-	)
-	if dc == client.Config().ThisDC {
-		conns, err = client.Pool(int64(c.conns()))
-	} else {
-		conns, err = client.DC(ctx, dc, int64(c.conns()))
-	}
-	if err != nil {
-		return nil, err
-	}
-	where := fmt.Sprintf("Dateiverbindungen DC %d", dc)
-	pool := tg.NewClient(floodWait{where: where, onWait: c.flooded, pass: isFileRead}.Handle(c.transferRetry().Handle(conns)))
-	c.pools[dc] = pool
-	c.Store.Log(store.LevelInfo, store.KindTelegram, "%d Dateiverbindungen zu Rechenzentrum %d aufgebaut", c.conns(), dc)
-	log.Printf("telegram: %d Dateiverbindungen zu Rechenzentrum %d aufgebaut", c.conns(), dc)
-	return pool, nil
-}
-
-func (c *Client) gate() *readGate {
-	c.readsOnce.Do(func() {
-		slots := readSlots
-		if c.Reads > 0 {
-			slots = c.Reads
-		}
-		c.reads = newReadGate(slots)
-	})
-	return c.reads
-}
-
-// countRead adds a file part to the download figures, which go to the log
-// once a minute while files are read.
-func (c *Client) countRead(n int) {
-	c.statsMu.Lock()
-	defer c.statsMu.Unlock()
-	now := time.Now()
-	if c.statsStart.IsZero() {
-		c.statsStart = now
-	}
-	c.statsParts++
-	c.statsBytes += int64(n)
-	took := now.Sub(c.statsStart)
-	if took < time.Minute {
-		return
-	}
-	log.Printf("telegram: Download der letzten %ds: %d Teile, %.1f MB/s, %d Bremsen, %d Verbindungen, zuletzt %d von %d Abrufen gleichzeitig",
-		int(took.Seconds()), c.statsParts, float64(c.statsBytes)/took.Seconds()/1e6, c.statsFloods, c.conns(), c.gate().state(), c.gate().max)
-	c.statsStart, c.statsParts, c.statsBytes, c.statsFloods = time.Time{}, 0, 0, 0
-}
-
-// flooded notes a rate limit. File reads slow down, and the log says which
-// limit hit which request, because a premium account should not see
-// FLOOD_PREMIUM_WAIT.
-func (c *Client) flooded(input bin.Encoder, what string) {
-	if isFileRead(input) {
-		c.gate().shrink()
-		c.statsMu.Lock()
-		c.statsFloods++
-		c.statsMu.Unlock()
-	}
+// noteFlood counts a rate limit for the activity log, which says once a
+// minute which limit hit which request, because a premium account should not
+// see FLOOD_PREMIUM_WAIT.
+func (c *Client) noteFlood(what string) {
 	c.floodMu.Lock()
 	defer c.floodMu.Unlock()
 	if c.floodCounts == nil {
@@ -354,6 +293,7 @@ func (c *Client) Ready() bool { return c.Status().Step == StepReady }
 
 // Run keeps the connection alive until ctx ends. The vault must be unlocked.
 func (c *Client) Run(ctx context.Context) {
+	c.startBots(ctx)
 	delay := time.Second
 	for ctx.Err() == nil {
 		c.setStatus(Status{Step: StepConnecting})
@@ -379,16 +319,14 @@ func (c *Client) Run(ctx context.Context) {
 func (c *Client) runOnce(ctx context.Context) error {
 	client := telegram.NewClient(c.AppID, c.AppHash, telegram.Options{
 		SessionStorage: sessionStorage{c},
-		Middlewares:    []telegram.Middleware{floodWait{where: "Hauptverbindung", onWait: c.flooded}, c.transferRetry()},
+		Middlewares:    []telegram.Middleware{floodWait{where: "Hauptverbindung", onWait: c.account().flooded}, c.transferRetry()},
 		Device:         telegram.DeviceConfig{DeviceModel: "Telegram Explorer", SystemVersion: "Docker", AppVersion: "1.0"},
 	})
 	return client.Run(ctx, func(ctx context.Context) error {
 		c.mu.Lock()
 		c.api, c.auth, c.tg = client.API(), client.Auth(), client
 		c.mu.Unlock()
-		c.poolMu.Lock()
-		c.pools = map[int]*tg.Client{}
-		c.poolMu.Unlock()
+		c.account().attach(client)
 		status, err := client.Auth().Status(ctx)
 		if err != nil {
 			return fmt.Errorf("auth status: %w", err)
@@ -433,9 +371,7 @@ func (c *Client) ensureChannel(ctx context.Context) error {
 		if err := json.Unmarshal(raw, &ref); err != nil {
 			return err
 		}
-		c.mu.Lock()
-		c.channel = &ref
-		c.mu.Unlock()
+		c.useChannel(ref)
 		return nil
 	}
 	res, err := c.client().ChannelsCreateChannel(ctx, &tg.ChannelsCreateChannelRequest{
@@ -460,13 +396,18 @@ func (c *Client) ensureChannel(ctx context.Context) error {
 			if err := c.Store.SetSetting("tg_channel", raw); err != nil {
 				return err
 			}
-			c.mu.Lock()
-			c.channel = &ref
-			c.mu.Unlock()
+			c.useChannel(ref)
 			return nil
 		}
 	}
 	return errors.New("Kanal wurde erstellt, aber nicht in der Antwort gefunden")
+}
+
+func (c *Client) useChannel(ref channelRef) {
+	c.mu.Lock()
+	c.channel = &ref
+	c.mu.Unlock()
+	c.account().setChannel(&tg.InputChannel{ChannelID: ref.ID, AccessHash: ref.AccessHash})
 }
 
 func (c *Client) client() *tg.Client {
@@ -616,7 +557,7 @@ func (c *Client) Put(ctx context.Context, name, mimeType string, r io.Reader, si
 		c.Delete(ctx, []int{msg.ID})
 		return 0, fmt.Errorf("Telegram meldet %d statt %d Bytes", doc.Size, size)
 	}
-	c.remember(msg.ID, doc)
+	c.account().remember(msg.ID, doc)
 	return msg.ID, nil
 }
 
@@ -657,103 +598,6 @@ func documentOf(msg *tg.Message) (*tg.Document, error) {
 	return doc, nil
 }
 
-func (c *Client) remember(msgID int, doc *tg.Document) docRef {
-	ref := docRef{
-		location: &tg.InputDocumentFileLocation{ID: doc.ID, AccessHash: doc.AccessHash, FileReference: doc.FileReference},
-		dc:       doc.DCID,
-		fetched:  time.Now(),
-	}
-	c.docs.Store(msgID, ref)
-	return ref
-}
-
-// location returns a document location. File references expire, so they are
-// refreshed from the message when old or when Telegram rejects them.
-func (c *Client) location(ctx context.Context, api *tg.Client, ch *channelRef, msgID int, fresh bool) (docRef, error) {
-	if v, ok := c.docs.Load(msgID); ok && !fresh {
-		if ref := v.(docRef); time.Since(ref.fetched) < docCacheTTL {
-			return ref, nil
-		}
-	}
-	res, err := api.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
-		Channel: &tg.InputChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash},
-		ID:      []tg.InputMessageClass{&tg.InputMessageID{ID: msgID}},
-	})
-	if err != nil {
-		return docRef{}, err
-	}
-	list, ok := res.(*tg.MessagesChannelMessages)
-	if !ok {
-		return docRef{}, errors.New("unerwartete Antwort von Telegram")
-	}
-	for _, m := range list.Messages {
-		if msg, ok := m.(*tg.Message); ok && msg.ID == msgID {
-			doc, err := documentOf(msg)
-			if err != nil {
-				return docRef{}, err
-			}
-			return c.remember(msgID, doc), nil
-		}
-	}
-	return docRef{}, fmt.Errorf("Nachricht %d: %w", msgID, files.ErrMissing)
-}
-
-// ReadPart implements files.Backend.
-func (c *Client) ReadPart(ctx context.Context, msgID int, part int64) ([]byte, error) {
-	api, ch, err := c.ready()
-	if err != nil {
-		return nil, err
-	}
-	fresh, refreshed := false, false
-	for {
-		ref, err := c.location(ctx, api, ch, msgID, fresh)
-		if err != nil {
-			return nil, err
-		}
-		fresh = false
-		reader := api
-		if pool, err := c.filePool(ctx, ref.dc); err == nil {
-			reader = pool
-		} else {
-			log.Printf("telegram: Dateiverbindungen zu Rechenzentrum %d: %v", ref.dc, err)
-		}
-		req := &tg.UploadGetFileRequest{Location: ref.location, Offset: part * files.PartSize, Limit: files.PartSize}
-		if err := c.gate().acquire(ctx); err != nil {
-			return nil, err
-		}
-		res, err := reader.UploadGetFile(ctx, req)
-		if tgerr.Is(err, "FILE_MIGRATE") {
-			// The main connection knows how to follow a moved file.
-			log.Printf("telegram: Nachricht %d liegt nicht in Rechenzentrum %d, lese über die Hauptverbindung", msgID, ref.dc)
-			res, err = api.UploadGetFile(ctx, req)
-		}
-		if d, ok := tgerr.AsFloodWait(err); ok && d <= maxFloodWait {
-			// Only this part waits; its slot goes to the next one meanwhile.
-			c.gate().release(false)
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(d):
-			}
-			continue
-		}
-		c.gate().release(err == nil)
-		if tgerr.Is(err, "FILE_REFERENCE_EXPIRED", "FILE_REFERENCE_INVALID") && !refreshed {
-			fresh, refreshed = true, true
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		file, ok := res.(*tg.UploadFile)
-		if !ok {
-			return nil, fmt.Errorf("unerwartete Antwort von Telegram: %T", res)
-		}
-		c.countRead(len(file.Bytes))
-		return file.Bytes, nil
-	}
-}
-
 // Sizes implements files.Backend.
 func (c *Client) Sizes(ctx context.Context, msgIDs []int) (map[int]int64, error) {
 	api, ch, err := c.ready()
@@ -784,7 +628,7 @@ func (c *Client) Sizes(ctx context.Context, msgIDs []int) (map[int]int64, error)
 				continue
 			}
 			if doc, err := documentOf(msg); err == nil {
-				c.remember(msg.ID, doc)
+				c.account().remember(msg.ID, doc)
 				sizes[msg.ID] = doc.Size
 			}
 		}
@@ -802,8 +646,10 @@ func (c *Client) Delete(ctx context.Context, msgIDs []int) error {
 		Channel: &tg.InputChannel{ChannelID: ch.ID, AccessHash: ch.AccessHash},
 		ID:      msgIDs,
 	})
-	for _, id := range msgIDs {
-		c.docs.Delete(id)
+	for _, f := range c.allFetchers() {
+		for _, id := range msgIDs {
+			f.docs.Delete(id)
+		}
 	}
 	return err
 }

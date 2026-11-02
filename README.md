@@ -18,6 +18,7 @@ A self-hosted file manager with a Windows Explorer look that uses your own Teleg
 - [Using it](#using-it)
 - [SFTP](#sftp)
 - [WebDAV](#webdav)
+- [Download helpers](#download-helpers)
 - [Encryption](#encryption)
 - [How files are stored](#how-files-are-stored)
 - [Operations](#operations)
@@ -30,6 +31,7 @@ A self-hosted file manager with a Windows Explorer look that uses your own Teleg
 - **Large files:** files of any size are split into segments. Uploads resume after an interruption and failed transfers are retried. Each file shows whether it is on its way to the server, on its way to Telegram or finished.
 - **Optional encryption:** encrypted files are unreadable to Telegram. Unencrypted files stay normal documents you can download directly in Telegram.
 - **Sharing:** public links with optional password, a lifetime from one minute to 100 years, and a download limit. Links open images, videos and PDFs directly. Shared files are marked in the list, and a share can be changed or ended at any time, including a new link.
+- **Download helpers:** bots that download alongside your account, each adding about 5 MB/s. The app can create them at @BotFather itself.
 - **Speed limits:** separate limits for traffic to and from Telegram. The status bar shows the current speed and switches the limit with one click.
 - **SFTP and WebDAV:** browse, upload and download with any SFTP client, or mount the storage as a drive over WebDAV with HTTPS. Both stay off until you switch them on.
 - **File checks:** a quick check asks Telegram whether a file still exists, without a download. A full check downloads it and compares checksums.
@@ -150,6 +152,7 @@ Settings are read from environment variables, usually through `.env`.
 | `HTTP_ADDR` | `:8080` | Listen address of the web interface. |
 | `SFTP_ADDR` | `:2222` | Listen address of the SFTP server. |
 | `TG_DOWNLOAD_CONNS` | `1` | Connections per Telegram data center for downloads, 1 to 16. |
+| `TG_BOTS` | | Tokens of helper bots, comma separated. See [Download helpers](#download-helpers). |
 | `TG_DOWNLOAD_READS` | `4` | File parts downloaded at once, 1 to 32. While downloading, the container log shows speed and rate limits once a minute, so you can compare settings. |
 | `WEBDAV_ADDR` | `:8443` | Listen address of the WebDAV server (HTTPS). |
 | `WEBDAV_HOSTS` | | Names or IPs clients use for WebDAV, comma separated. The self-signed certificate is made out to them and to `localhost`. |
@@ -203,6 +206,19 @@ sftp -P 2222 username@storage.example.com
 Written files first land in temporary storage and are transferred to Telegram when closed. An overwritten file's old version moves to the trash.
 
 Plain FTP is deliberately not included, because it sends passwords in clear text.
+
+## Download helpers
+
+Telegram answers about five file parts of 1 MB a second per login, so downloads stay around 5 MB/s even with Premium. Every helper bot is a login of its own: the app shares the parts between the account and the bots, and each bot adds about as much again. This is untested at scale and Telegram may change its limits.
+
+There are two ways to add helpers:
+
+- **In the web interface:** *Settings → Speicher → Download-Helfer*. *Neuen Bot anlegen* has your account ask @BotFather for a new bot, or you paste the token of a bot you made yourself. The tokens are stored encrypted with the metadata.
+- **In `.env`:** `TG_BOTS=123456:ABC…,234567:DEF…`. These bots show up in the settings but are removed only in `.env`.
+
+Either way the app makes each bot an admin of the storage channel with the least rights Telegram has, because bots only see channels they administer. Removing a bot in the web interface takes it out of the channel; the bot itself stays at @BotFather, where `/deletebot` deletes it. An account can own 20 bots.
+
+The container log shows how many parts each login fetched once a minute while downloading.
 
 ## WebDAV
 
@@ -278,7 +294,7 @@ docker compose run --rm -v "$PWD/backup.telexbk:/backup.telexbk:ro" telex restor
 - This is a young project for personal use and has had no independent security audit.
 - It is built for a single user.
 - Using Telegram as file storage may conflict with Telegram's terms of service. Automated use of an account can lead to restrictions. You use this at your own risk.
-- Telegram limits transfer speed. Downloads were measured at about 5 MB/s even with Premium, because Telegram answers about five file parts of 1 MB a second for this kind of client, however many connections ask. Uploads reach 30 MB/s and more.
+- Telegram limits transfer speed. Downloads were measured at about 5 MB/s per login even with Premium, because Telegram answers about five file parts of 1 MB a second, however many connections ask. [Download helpers](#download-helpers) add logins. Uploads reach 30 MB/s and more.
 - A quick check confirms existence and size. Only a full check detects changed content.
 
 ## Development

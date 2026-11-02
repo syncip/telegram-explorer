@@ -35,6 +35,7 @@ type env struct {
 	client *http.Client
 	engine *files.Engine
 	auth   *auth.Manager
+	server *Server
 }
 
 func newEnv(t *testing.T) *env {
@@ -61,7 +62,7 @@ func newEnv(t *testing.T) *env {
 	srv := httptest.NewServer(s.Handler())
 	t.Cleanup(srv.Close)
 	jar, _ := cookiejar.New(nil)
-	return &env{t: t, srv: srv, client: &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, engine: engine, auth: manager}
+	return &env{t: t, srv: srv, client: &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, engine: engine, auth: manager, server: s}
 }
 
 func (e *env) do(method, path string, body any, headers ...string) (*http.Response, []byte) {

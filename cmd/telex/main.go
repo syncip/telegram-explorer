@@ -90,7 +90,8 @@ func run() error {
 			return errors.New("TG_APP_ID und TG_APP_HASH müssen gesetzt sein")
 		}
 		tgClient = &telegram.Client{AppID: appID, AppHash: os.Getenv("TG_APP_HASH"), Store: st, Vault: engine.Vault,
-			Conns: envInt("TG_DOWNLOAD_CONNS", 1, 16), Reads: envInt("TG_DOWNLOAD_READS", 1, 32)}
+			Conns: envInt("TG_DOWNLOAD_CONNS", 1, 16), Reads: envInt("TG_DOWNLOAD_READS", 1, 32),
+			BotTokens: strings.Split(os.Getenv("TG_BOTS"), ",")}
 		backend = tgClient
 	case "local":
 		log.Print("ACHTUNG: lokaler Testspeicher aktiv, Dateien gehen nicht zu Telegram")
@@ -131,6 +132,7 @@ func run() error {
 		TrustProxy: os.Getenv("TRUST_PROXY") == "1", SetupCode: auth.Token(9)}
 	if tgClient != nil {
 		server.Telegram = tgClient
+		server.Bots = tgClient
 	}
 	if user, err := manager.User(); err != nil {
 		return err

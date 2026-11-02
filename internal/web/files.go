@@ -689,7 +689,7 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) error {
 	backup, _ := s.Engine.Store.Setting("backup_at")
 	speed := s.Engine.Speed()
 	out := map[string]any{"username": u.Username, "sftpEnabled": u.SFTP != "", "totpEnabled": u.TOTP != "", "backupAt": string(backup), "blockMiB": s.Engine.BlockMiB(),
-		"limitUp": speed.LimitUp, "limitDown": speed.LimitDown, "webdavEnabled": u.WebDAV != ""}
+		"limitUp": speed.LimitUp, "limitDown": speed.LimitDown, "webdavEnabled": u.WebDAV != "", "bots": s.Bots != nil}
 	if s.WebDAV != nil {
 		_, port, _ := net.SplitHostPort(s.WebDAV.Addr)
 		out["webdavPort"] = port

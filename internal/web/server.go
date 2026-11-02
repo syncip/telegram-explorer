@@ -53,6 +53,8 @@ type Server struct {
 	OnSFTPChange func() error
 	// WebDAV is nil when the endpoint is not wired up, as in tests.
 	WebDAV *davd.Server
+	// Bots is nil with the local backend.
+	Bots HelperBots
 
 	uploadLocks sync.Map
 	grants      sync.Map // share password grant -> expiry
@@ -212,6 +214,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/settings/webdav/cert", s.open(s.webdavCert))
 	mux.HandleFunc("POST /api/settings/blocks", s.open(s.setBlocks))
 	mux.HandleFunc("POST /api/settings/limits", s.open(s.setLimits))
+	mux.HandleFunc("GET /api/settings/bots", s.open(s.listBots))
+	mux.HandleFunc("POST /api/settings/bots", s.open(s.addBot))
+	mux.HandleFunc("DELETE /api/settings/bots/{id}", s.open(s.removeBot))
 	mux.HandleFunc("POST /api/settings/totp/begin", s.open(s.totpBegin))
 	mux.HandleFunc("POST /api/settings/totp/confirm", s.open(s.totpConfirm))
 	mux.HandleFunc("POST /api/settings/totp/disable", s.open(s.totpDisable))

@@ -1,7 +1,6 @@
 package telegram
 
 import (
-	"context"
 	"sync"
 	"time"
 )
@@ -13,7 +12,7 @@ const shrinkHold = time.Second
 // readGate limits how many file parts are read at once. Telegram takes a
 // varying number, so the gate learns it like a TCP congestion window: it
 // halves on a wait and grows by one for every window of answered reads. A wait
-// hits only its own part; the others go on.
+// hits only its own part; the others go on. Every login has its own gate.
 type readGate struct {
 	mu       sync.Mutex
 	limit    int
@@ -21,36 +20,28 @@ type readGate struct {
 	active   int
 	answered int
 	shrunk   time.Time
-	free     chan struct{} // closed when a slot frees up
+	onFree   func() // runs when a slot frees up
 }
 
-func newReadGate(max int) *readGate {
-	return &readGate{limit: max, max: max, free: make(chan struct{})}
+func newReadGate(max int, onFree func()) *readGate {
+	return &readGate{limit: max, max: max, onFree: onFree}
 }
 
-func (g *readGate) acquire(ctx context.Context) error {
-	for {
-		g.mu.Lock()
-		if g.active < g.limit {
-			g.active++
-			g.mu.Unlock()
-			return nil
-		}
-		free := g.free
-		g.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-free:
-		}
+// tryAcquire takes a slot if one is free.
+func (g *readGate) tryAcquire() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.active >= g.limit {
+		return false
 	}
+	g.active++
+	return true
 }
 
 // release frees a slot. answered says whether Telegram answered the read
 // rather than asking to wait.
 func (g *readGate) release(answered bool) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	g.active--
 	if answered {
 		if g.answered++; g.answered >= g.limit && g.limit < g.max {
@@ -58,8 +49,10 @@ func (g *readGate) release(answered bool) {
 			g.answered = 0
 		}
 	}
-	close(g.free)
-	g.free = make(chan struct{})
+	g.mu.Unlock()
+	if g.onFree != nil {
+		g.onFree()
+	}
 }
 
 // state reports how many reads may run at once.

@@ -1,27 +1,24 @@
 package telegram
 
 import (
-	"context"
 	"testing"
 	"time"
 )
 
 func TestReadGate(t *testing.T) {
-	g := newReadGate(8)
-	ctx := context.Background()
+	freed := 0
+	g := newReadGate(8, func() { freed++ })
 	g.shrink()
 	g.shrink() // the same burst
 	if g.limit != 4 {
 		t.Fatalf("limit %d after one burst of waits", g.limit)
 	}
 	for range 4 {
-		if err := g.acquire(ctx); err != nil {
-			t.Fatal(err)
+		if !g.tryAcquire() {
+			t.Fatal("a halved gate must still take four reads")
 		}
 	}
-	short, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
-	defer cancel()
-	if err := g.acquire(short); err == nil {
+	if g.tryAcquire() {
 		t.Fatal("a halved gate must hold the fifth read")
 	}
 
@@ -29,20 +26,20 @@ func TestReadGate(t *testing.T) {
 	for range 4 {
 		g.release(false)
 	}
-	if g.limit != 4 {
-		t.Fatalf("limit %d after waits", g.limit)
+	if g.limit != 4 || freed != 4 {
+		t.Fatalf("limit %d, %d wake-ups after waits", g.limit, freed)
 	}
 
 	// One window of answers adds one slot, never beyond the start.
 	for range 4 {
-		g.acquire(ctx)
+		g.tryAcquire()
 		g.release(true)
 	}
 	if g.limit != 5 {
 		t.Fatalf("limit %d after one window of answers", g.limit)
 	}
 	for range 200 {
-		g.acquire(ctx)
+		g.tryAcquire()
 		g.release(true)
 	}
 	if g.limit != 8 {
