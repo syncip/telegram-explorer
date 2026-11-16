@@ -448,4 +448,9 @@
   .err {
     color: var(--danger);
   }
+  @media (pointer: coarse) {
+    a.button {
+      height: 46px;
+    }
+  }
 </style>

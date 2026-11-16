@@ -13,6 +13,7 @@
   import SpeedControl from './SpeedControl.svelte'
   import TreeNode from './TreeNode.svelte'
   import UploadPanel from './UploadPanel.svelte'
+  import { isApp, onBack, onMessage, send } from './native.js'
 
   let { app, onlogout } = $props()
 
@@ -214,6 +215,62 @@
     forward = forward.slice(0, -1)
     back = [...back, currentId]
     go(id, false)
+  }
+
+  // The Android app's back button: close what is open, then walk back.
+  $effect(() => onBack(handleBack))
+
+  // Files shared to the Android app from other apps wait here until uploaded.
+  let sharedCount = $state(0)
+  $effect(() => {
+    if (!isApp) return
+    const off = onMessage((m) => {
+      if (m.type === 'shared') sharedCount = m.count
+    })
+    send({ type: 'explorer' })
+    return off
+  })
+
+  // The accept marker tells the app which files the picker is for; a bridge message
+  // could arrive after the picker request.
+  function uploadShared() {
+    fileInput.accept = 'telex/shared'
+    fileInput.click()
+    fileInput.accept = ''
+  }
+
+  function handleBack() {
+    if (modal) {
+      if (!modal.busy) modal = null
+      return true
+    }
+    if (menu || uploadMenu) {
+      menu = null
+      uploadMenu = false
+      return true
+    }
+    if (navOpen) {
+      navOpen = false
+      return true
+    }
+    if (selected.size) {
+      selected = new Set()
+      return true
+    }
+    if (mode !== 'files') {
+      go(currentId, false)
+      return true
+    }
+    if (back.length) {
+      goBack()
+      return true
+    }
+    return false
+  }
+
+  function pickFolderClick() {
+    if (isApp) folderInput.accept = 'telex/folder'
+    folderInput.click()
   }
 
   function goUp() {
@@ -651,7 +708,7 @@
         {#if uploadMenu}
           <div class="menu drop" role="menu">
             <button role="menuitem" onclick={() => fileInput.click()}>Dateien auswählen</button>
-            <button role="menuitem" onclick={() => folderInput.click()}>Ordner auswählen</button>
+            <button role="menuitem" onclick={pickFolderClick}>Ordner auswählen</button>
           </div>
         {/if}
       </div>
@@ -714,6 +771,14 @@
     </label>
   </div>
 
+  {#if sharedCount && mode === 'files'}
+    <div class="shared-banner" role="status">
+      <span>{sharedCount === 1 ? '1 geteilte Datei' : `${sharedCount} geteilte Dateien`} in diesen Ordner hochladen?</span>
+      <button class="primary" onclick={uploadShared}>Hochladen</button>
+      <button class="secondary" onclick={() => send({ type: 'sharedDrop' })}>Verwerfen</button>
+    </div>
+  {/if}
+
   {#if error}
     <div class="error" role="alert">
       <span>{error}</span>
@@ -733,6 +798,10 @@
         <button class:active={mode === 'trash'} onclick={() => setMode('trash')}><Icon name="trash" /><span>Papierkorb</span></button>
         <button class:active={mode === 'logs'} onclick={() => setMode('logs')}><Icon name="list" /><span>Protokoll</span></button>
         <button onclick={() => (modal = { type: 'settings' })}><Icon name="settings" /><span>Einstellungen</span></button>
+        {#if isApp}
+          <button onclick={() => send({ type: 'lock' })}><Icon name="lock" /><span>App sperren</span></button>
+          <button onclick={() => send({ type: 'appSettings' })}><Icon name="settings" /><span>App-Einstellungen</span></button>
+        {/if}
         <button onclick={logout}><Icon name="logout" /><span>Abmelden</span></button>
       </div>
     </aside>
@@ -1066,6 +1135,19 @@
     width: 100%;
     color: var(--text);
     outline: none;
+  }
+  .shared-banner {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px 14px;
+    background: var(--selected);
+    color: var(--text);
+    flex: none;
+  }
+  .shared-banner span {
+    flex: 1 1 200px;
   }
   .error {
     display: flex;
@@ -1455,6 +1537,104 @@
     }
     .search:focus-within {
       width: 150px;
+    }
+    .stats {
+      display: none;
+    }
+    .status > :global(*) {
+      white-space: nowrap;
+    }
+  }
+  /* Phones and tablets: finger-sized targets and larger text. */
+  @media (pointer: coarse) {
+    .toolbar {
+      height: 58px;
+      scrollbar-width: none;
+    }
+    .toolbar::-webkit-scrollbar {
+      display: none;
+    }
+    .tool {
+      height: 46px;
+      min-width: 46px;
+      padding: 0 12px;
+      justify-content: center;
+    }
+    .tool :global(svg),
+    .address :global(button.icon svg) {
+      width: 22px;
+      height: 22px;
+    }
+    .address {
+      height: 58px;
+    }
+    .address :global(button.icon) {
+      width: 44px;
+      height: 44px;
+    }
+    .crumbs,
+    .search {
+      height: 44px;
+    }
+    .crumb {
+      padding: 6px 8px;
+    }
+    .search {
+      width: 48px;
+      padding: 0 16px;
+    }
+    .search:focus-within {
+      width: 170px;
+    }
+    .search :global(svg) {
+      width: 18px;
+      height: 18px;
+      flex: none;
+    }
+    .nav {
+      width: min(300px, 85vw);
+    }
+    .links button {
+      height: 50px;
+      gap: 14px;
+      font-size: 16px;
+    }
+    .links :global(svg) {
+      width: 20px;
+      height: 20px;
+    }
+    th button {
+      height: 42px;
+    }
+    td {
+      height: 54px;
+    }
+    .cell {
+      gap: 12px;
+    }
+    .grid {
+      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    }
+    .status {
+      height: 36px;
+      font-size: 13px;
+    }
+    .menu {
+      width: min(300px, calc(100vw - 16px));
+    }
+    .menu.drop {
+      top: 58px;
+    }
+    .menu button {
+      height: 50px;
+      font-size: 16px;
+    }
+    .tmp-actions button {
+      height: 38px;
+      padding: 0 12px;
+    }
+    .shared-banner {
+      padding: 10px 14px;
     }
   }
 </style>

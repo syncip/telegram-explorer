@@ -262,4 +262,13 @@
   small.bad {
     color: var(--danger);
   }
+  @media (pointer: coarse) {
+    .sm {
+      width: 40px;
+      height: 40px;
+    }
+    .line {
+      min-height: 40px;
+    }
+  }
 </style>

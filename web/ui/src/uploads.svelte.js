@@ -1,4 +1,5 @@
 import { api, ApiError, post } from './api.js'
+import { clearFolderPaths, folderPath } from './native.js'
 
 const CHUNK = 8 << 20
 
@@ -256,8 +257,10 @@ export async function addDropped(dataTransfer, parentId, encrypted) {
 // addFolderInput handles the result of <input webkitdirectory>.
 export async function addFolderInput(fileList, parentId, encrypted) {
   const folders = new Map()
-  for (const file of fileList) {
-    const parts = file.webkitRelativePath.split('/')
+  const paths = fileList.map((file, i) => file.webkitRelativePath || folderPath(file, i) || file.name)
+  clearFolderPaths()
+  for (const [i, file] of fileList.entries()) {
+    const parts = paths[i].split('/')
     const name = parts.pop()
     let id = parentId
     let path = ''

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:icon="@drawable/ic_lock"
+        android:shortcutId="lock"
+        android:shortcutShortLabel="@string/shortcut_lock">
+        <intent
+            android:action="com.wagnermartin.telex.LOCK"
+            android:targetClass="com.wagnermartin.telex.MainActivity"
+            android:targetPackage="com.wagnermartin.telex" />
+    </shortcut>
+    <shortcut
+        android:icon="@drawable/ic_settings"
+        android:shortcutId="settings"
+        android:shortcutShortLabel="@string/shortcut_settings">
+        <intent
+            android:action="com.wagnermartin.telex.SETTINGS"
+            android:targetClass="com.wagnermartin.telex.MainActivity"
+            android:targetPackage="com.wagnermartin.telex" />
+    </shortcut>
+</shortcuts>

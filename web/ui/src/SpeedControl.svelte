@@ -131,4 +131,10 @@
     margin: 6px 0 0;
     color: var(--muted);
   }
+  @media (pointer: coarse) {
+    .toggle {
+      height: 30px;
+      font-size: 13px;
+    }
+  }
 </style>

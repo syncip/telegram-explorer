@@ -108,4 +108,9 @@
     height: 28px;
     padding: 0 10px;
   }
+  @media (pointer: coarse) {
+    td {
+      height: 52px;
+    }
+  }
 </style>

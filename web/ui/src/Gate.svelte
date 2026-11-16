@@ -1,11 +1,24 @@
 <script>
   import { post } from './api.js'
+  import { isApp, onMessage, send } from './native.js'
 
   let { state: app, onchange } = $props()
 
   let f = $state({ setupCode: '', username: '', password: '', passphrase: '', passphrase2: '', code: '', phone: '', tgCode: '', tgPassword: '' })
   let error = $state('')
   let busy = $state(false)
+
+  // In the Android app the fingerprint can fill in a stored login or passphrase.
+  let stored = $state({ login: false, passphrase: false })
+  $effect(() => {
+    if (!isApp) return
+    const off = onMessage((m) => {
+      if (m.type === 'stored') stored = m
+    })
+    send({ type: 'hello' })
+    return off
+  })
+  const bio = $derived((step === 'login' && stored.login) || (step === 'unlock' && stored.passphrase))
 
   const step = $derived.by(() => {
     if (app.needsSetup) return 'setup'
@@ -85,6 +98,9 @@
     {#if step !== 'connecting'}
       <button class="primary" disabled={busy}>{busy ? 'Bitte warten' : step === 'setup' ? 'Einrichten' : 'Weiter'}</button>
     {/if}
+    {#if bio}
+      <button type="button" class="secondary bio" onclick={() => send({ type: 'bio', step })}>Mit Fingerabdruck</button>
+    {/if}
   </form>
 </main>
 
@@ -125,9 +141,22 @@
     margin-top: 4px;
     width: 100%;
   }
-  .primary {
+  .primary,
+  .bio {
     width: 100%;
     height: 34px;
+  }
+  .bio {
+    margin-top: 8px;
+  }
+  @media (pointer: coarse) {
+    .primary,
+    .bio {
+      height: 48px;
+    }
+    form {
+      padding: 24px 20px;
+    }
   }
   .warn {
     color: var(--warning-text);
