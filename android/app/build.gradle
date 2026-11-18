@@ -1,0 +1,73 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
+
+android {
+    namespace 'com.wagnermartin.telex'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.wagnermartin.telex'
+        minSdk 30
+        targetSdk 36
+        versionCode 1
+        versionName '1.0.0'
+    }
+
+    // The release key lives outside the repo: telex.keystoreProperties=<path> in
+    // local.properties, or ~/.telex-signing/keystore.properties. Without it the
+    // release build stays unsigned.
+    def localProps = new Properties()
+    def localPropsFile = rootProject.file('local.properties')
+    if (localPropsFile.exists()) localPropsFile.withInputStream { localProps.load(it) }
+    def keystorePropsFile = file(localProps.getProperty('telex.keystoreProperties',
+            "${System.getProperty('user.home')}/.telex-signing/keystore.properties"))
+    signingConfigs {
+        release {
+            if (keystorePropsFile.exists()) {
+                def p = new Properties()
+                keystorePropsFile.withInputStream { p.load(it) }
+                storeFile file(p['storeFile'])
+                storePassword p['storePassword']
+                keyAlias p['keyAlias']
+                keyPassword p['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (keystorePropsFile.exists()) signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    buildFeatures {
+        viewBinding false
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.JVM_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.16.0'
+    implementation 'androidx.appcompat:appcompat:1.7.1'
+    implementation 'androidx.activity:activity-ktx:1.10.1'
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.9.1'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2'
+    implementation 'androidx.preference:preference-ktx:1.2.1'
+    implementation 'androidx.biometric:biometric:1.1.0'
+    implementation 'androidx.webkit:webkit:1.14.0'
+    implementation 'com.google.android.material:material:1.13.0'
+}

@@ -118,4 +118,13 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  @media (pointer: coarse) {
+    .row {
+      height: 46px;
+    }
+    .twist {
+      width: 36px;
+      height: 44px;
+    }
+  }
 </style>

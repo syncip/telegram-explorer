@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Telegram Explorer</string>
+
+    <string name="shortcut_lock">Sperren</string>
+    <string name="shortcut_settings">App-Einstellungen</string>
+
+    <string name="server_title">Server</string>
+    <string name="server_intro">Adresse deines Telegram Explorer, so wie du sie im Browser öffnest.</string>
+    <string name="server_hint">https://explorer.example.com</string>
+    <string name="server_connect">Verbinden</string>
+    <string name="server_checking">Verbindung wird geprüft</string>
+    <string name="server_invalid">Bitte eine Adresse mit http:// oder https:// eingeben.</string>
+    <string name="server_not_telex">Unter dieser Adresse antwortet kein Telegram Explorer (%1$s).</string>
+    <string name="server_unreachable">Server nicht erreichbar: %1$s</string>
+    <string name="server_http_title">Unverschlüsselte Verbindung</string>
+    <string name="server_http_message">Über http:// gehen Kennwort, Passphrase und Dateien unverschlüsselt durchs Netz. Das ist nur im eigenen Heimnetz oder über ein VPN vertretbar.</string>
+    <string name="server_http_continue">Trotzdem verbinden</string>
+
+    <string name="locked_title">Telegram Explorer ist gesperrt</string>
+    <string name="locked_unlock">Entsperren</string>
+    <string name="lock_prompt_title">Telegram Explorer entsperren</string>
+    <string name="lock_prompt_subtitle">Mit Fingerabdruck bestätigen</string>
+    <string name="cancel">Abbrechen</string>
+
+    <string name="load_error_title">Server nicht erreichbar</string>
+    <string name="retry">Erneut versuchen</string>
+    <string name="change_server">Server ändern</string>
+    <string name="ssl_error">Das Zertifikat des Servers ist nicht gültig (%1$s). Ein selbst signiertes Zertifikat muss zuerst in Android als Nutzerzertifikat installiert werden.</string>
+
+    <string name="bio_save_title">Mit Fingerabdruck speichern?</string>
+    <string name="bio_save_login">Beim nächsten Mal meldet dich dein Fingerabdruck an, statt Benutzername und Kennwort einzutippen.</string>
+    <string name="bio_save_passphrase">Nach einem Neustart des Servers entsperrt dein Fingerabdruck den Tresor, statt die Passphrase einzutippen.</string>
+    <string name="bio_save_both">Beim nächsten Mal meldet dich dein Fingerabdruck an und entsperrt den Tresor.</string>
+    <string name="bio_update_title">Gespeicherte Daten aktualisieren?</string>
+    <string name="bio_update_message">Du hast %1$s geändert. Soll der Fingerabdruck ab jetzt die neue Version verwenden?</string>
+    <string name="bio_save_yes">Speichern</string>
+    <string name="bio_save_never">Nie fragen</string>
+    <string name="bio_save_no">Jetzt nicht</string>
+    <string name="bio_confirm_save">Speichern bestätigen</string>
+    <string name="bio_login_title">Anmelden</string>
+    <string name="bio_unlock_title">Tresor entsperren</string>
+    <string name="bio_login_unlock_title">Anmelden und Tresor entsperren</string>
+    <string name="bio_saved">Mit Fingerabdruck gespeichert.</string>
+    <string name="bio_invalidated">Die Fingerabdrücke wurden geändert. Die gespeicherten Anmeldedaten wurden deshalb gelöscht.</string>
+    <string name="bio_login_failed">Anmeldung mit den gespeicherten Daten fehlgeschlagen. Melde dich von Hand an, dann bietet die App an, die neuen Daten zu speichern.</string>
+    <string name="bio_unlock_failed">Die gespeicherte Passphrase wurde abgelehnt. Gib sie von Hand ein, dann bietet die App an, die neue zu speichern.</string>
+    <string name="bio_code_needed">Bitte noch den 2FA-Code eingeben.</string>
+    <string name="bio_not_available">Auf diesem Gerät ist kein Fingerabdruck eingerichtet.</string>
+    <string name="bio_with_fingerprint">Mit Fingerabdruck</string>
+    <string name="the_password">das Kennwort</string>
+    <string name="the_passphrase">die Passphrase</string>
+
+    <string name="download_started">Download gestartet: %1$s</string>
+    <string name="download_failed">Download fehlgeschlagen: %1$s</string>
+    <string name="opening">Wird geöffnet: %1$s</string>
+    <string name="no_app_for_file">Keine App zum Öffnen dieser Datei gefunden.</string>
+    <string name="share_read_failed">Eine geteilte Datei konnte nicht gelesen werden.</string>
+    <string name="file_chooser_failed">Dateiauswahl nicht möglich.</string>
+
+    <string name="settings_title">App-Einstellungen</string>
+    <string name="pref_cat_server">Server</string>
+    <string name="pref_server">Serveradresse</string>
+    <string name="pref_cat_lock">App-Sperre</string>
+    <string name="pref_app_lock">App mit Fingerabdruck sperren</string>
+    <string name="pref_app_lock_summary">Beim Öffnen und nach einer Pause wird der Fingerabdruck verlangt.</string>
+    <string name="pref_lock_timeout">Sperren nach</string>
+    <string name="pref_device_credential">Geräte-PIN als Ersatz erlauben</string>
+    <string name="pref_device_credential_summary">Wird der Fingerabdruck nicht erkannt, entsperrt auch PIN, Muster oder Passwort des Geräts die App.</string>
+    <string name="pref_secure">Bildschirminhalt schützen</string>
+    <string name="pref_secure_summary">Keine Screenshots und kein Vorschaubild in der Liste der zuletzt verwendeten Apps.</string>
+    <string name="pref_cat_bio">Fingerabdruck-Anmeldung</string>
+    <string name="pref_bio_offer">Speichern anbieten</string>
+    <string name="pref_bio_offer_summary">Nach Anmelden und Entsperren anbieten, Kennwort und Passphrase mit dem Fingerabdruck zu schützen.</string>
+    <string name="pref_bio_auto">Automatisch abfragen</string>
+    <string name="pref_bio_auto_summary">Den Fingerabdruck sofort abfragen, wenn Anmeldung oder Tresor ihn brauchen.</string>
+    <string name="pref_bio_stored">Gespeicherte Daten</string>
+    <string name="pref_bio_stored_none">Nichts gespeichert.</string>
+    <string name="pref_bio_clear">Gespeicherte Daten löschen</string>
+    <string name="pref_bio_cleared">Gelöscht.</string>
+    <string name="pref_cat_data">Daten</string>
+    <string name="pref_clear_cache">Cache leeren</string>
+    <string name="pref_clear_cache_summary">Löscht zwischengespeicherte Seiten und geöffnete Dateien. Die Anmeldung bleibt erhalten.</string>
+    <string name="pref_cache_cleared">Cache geleert.</string>
+    <string name="pref_about">Version</string>
+    <string name="confirm_disable_lock">App-Sperre ausschalten</string>
+
+    <string name="pref_cat_display">Darstellung</string>
+    <string name="pref_text_zoom">Schriftgröße</string>
+    <string-array name="text_zoom_labels">
+        <item>Normal (100 %)</item>
+        <item>Größer (115 %)</item>
+        <item>Groß (130 %)</item>
+        <item>Sehr groß (150 %)</item>
+    </string-array>
+    <string-array name="text_zoom_values">
+        <item>100</item>
+        <item>115</item>
+        <item>130</item>
+        <item>150</item>
+    </string-array>
+
+    <string-array name="lock_timeout_labels">
+        <item>Sofort</item>
+        <item>1 Minute</item>
+        <item>5 Minuten</item>
+        <item>15 Minuten</item>
+        <item>1 Stunde</item>
+    </string-array>
+    <string-array name="lock_timeout_values">
+        <item>0</item>
+        <item>60</item>
+        <item>300</item>
+        <item>900</item>
+        <item>3600</item>
+    </string-array>
+</resources>

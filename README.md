@@ -19,6 +19,7 @@ A self-hosted file manager with a Windows Explorer look that uses your own Teleg
 - [SFTP](#sftp)
 - [WebDAV](#webdav)
 - [Download helpers](#download-helpers)
+- [Android app](#android-app)
 - [Encryption](#encryption)
 - [How files are stored](#how-files-are-stored)
 - [Operations](#operations)
@@ -237,6 +238,26 @@ The certificate lasts 800 days and is renewed automatically 30 days before it ru
 Windows limits WebDAV downloads to 50 MB by default. To raise it to the maximum of 4 GB, set `FileSizeLimitInBytes` under `HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\WebClient\Parameters` to `4294967295` and restart the *WebClient* service.
 
 Like SFTP, written files first land in temporary storage and are transferred to Telegram when closed, and an overwritten file's old version moves to the trash.
+
+## Android app
+
+`android/` holds an Android app (Android 11 or newer) for the same server. It shows the web interface and adds what a browser tab cannot do:
+
+- **App lock:** the app asks for your fingerprint when it opens and after a pause you choose (right away up to an hour). *Bildschirminhalt schützen* blocks screenshots and the preview in the recent apps list.
+- **Fingerprint login:** after you log in or unlock the vault once, the app offers to keep the password and the passphrase behind your fingerprint. After a server restart one fingerprint logs you in and unlocks the vault. With 2FA the app fills in the login and you type only the code. The values are encrypted with an Android Keystore key that works only after a fingerprint check and that Android deletes when fingerprints are added or removed.
+- **Sharing:** *Teilen → Telegram Explorer* from any app uploads to the folder that is open.
+- **Downloads** go to the *Download* folder through Android's download manager, PDFs open in your PDF app, and whole folders can be uploaded.
+- **Touch layout:** larger buttons and text on phones (this also applies in mobile browsers), and an extra text size setting in the app.
+
+On first start the app asks for the address you open in the browser, for example `https://explorer.example.com`. Plain `http://` works for a home network or VPN; the app warns about it. A self-signed certificate must first be installed in Android as a user certificate.
+
+Build it with JDK 17 or newer and the Android SDK:
+
+```bash
+cd android && ./gradlew assembleDebug
+```
+
+The APK is `android/app/build/outputs/apk/debug/app-debug.apk`. For a signed release build put `storeFile`, `storePassword`, `keyAlias` and `keyPassword` into `~/.telex-signing/keystore.properties` (or point `telex.keystoreProperties` in `android/local.properties` elsewhere) and run `./gradlew assembleRelease`.
 
 ## Encryption
 

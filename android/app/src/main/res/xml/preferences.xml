@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <PreferenceCategory app:title="@string/pref_cat_server" app:iconSpaceReserved="false">
+        <Preference
+            app:iconSpaceReserved="false"
+            app:key="server"
+            app:title="@string/pref_server" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="@string/pref_cat_display" app:iconSpaceReserved="false">
+        <ListPreference
+            app:defaultValue="100"
+            app:entries="@array/text_zoom_labels"
+            app:entryValues="@array/text_zoom_values"
+            app:iconSpaceReserved="false"
+            app:key="text_zoom"
+            app:title="@string/pref_text_zoom"
+            app:useSimpleSummaryProvider="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="@string/pref_cat_lock" app:iconSpaceReserved="false">
+        <SwitchPreferenceCompat
+            app:defaultValue="true"
+            app:iconSpaceReserved="false"
+            app:key="app_lock"
+            app:summary="@string/pref_app_lock_summary"
+            app:title="@string/pref_app_lock" />
+        <ListPreference
+            app:defaultValue="0"
+            app:dependency="app_lock"
+            app:entries="@array/lock_timeout_labels"
+            app:entryValues="@array/lock_timeout_values"
+            app:iconSpaceReserved="false"
+            app:key="lock_timeout"
+            app:title="@string/pref_lock_timeout"
+            app:useSimpleSummaryProvider="true" />
+        <SwitchPreferenceCompat
+            app:defaultValue="false"
+            app:dependency="app_lock"
+            app:iconSpaceReserved="false"
+            app:key="device_credential"
+            app:summary="@string/pref_device_credential_summary"
+            app:title="@string/pref_device_credential" />
+        <SwitchPreferenceCompat
+            app:defaultValue="true"
+            app:iconSpaceReserved="false"
+            app:key="secure_screen"
+            app:summary="@string/pref_secure_summary"
+            app:title="@string/pref_secure" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="@string/pref_cat_bio" app:iconSpaceReserved="false">
+        <SwitchPreferenceCompat
+            app:defaultValue="true"
+            app:iconSpaceReserved="false"
+            app:key="bio_offer"
+            app:summary="@string/pref_bio_offer_summary"
+            app:title="@string/pref_bio_offer" />
+        <SwitchPreferenceCompat
+            app:defaultValue="true"
+            app:iconSpaceReserved="false"
+            app:key="bio_auto"
+            app:summary="@string/pref_bio_auto_summary"
+            app:title="@string/pref_bio_auto" />
+        <Preference
+            app:iconSpaceReserved="false"
+            app:key="bio_stored"
+            app:selectable="false"
+            app:title="@string/pref_bio_stored" />
+        <Preference
+            app:iconSpaceReserved="false"
+            app:key="bio_clear"
+            app:title="@string/pref_bio_clear" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="@string/pref_cat_data" app:iconSpaceReserved="false">
+        <Preference
+            app:iconSpaceReserved="false"
+            app:key="clear_cache"
+            app:summary="@string/pref_clear_cache_summary"
+            app:title="@string/pref_clear_cache" />
+        <Preference
+            app:iconSpaceReserved="false"
+            app:key="about"
+            app:selectable="false"
+            app:title="@string/pref_about" />
+    </PreferenceCategory>
+</PreferenceScreen>
