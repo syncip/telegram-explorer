@@ -3,6 +3,7 @@
   import { addDropped, addFolderInput, cancel as cancelUpload, enqueue, resume, retry as retryUpload, syncJobs, uploads } from './uploads.svelte.js'
   import Dialog from './Dialog.svelte'
   import FileIcon from './FileIcon.svelte'
+  import { live, on } from './live.js'
   import Icon from './Icon.svelte'
   import Logs from './Logs.svelte'
   import Preview from './Preview.svelte'
@@ -649,29 +650,62 @@
   }
 
   let lastJobs = 0
-  let lastVerified = 0
-  async function poll() {
-    const folder = currentId
-    const [list, check, st, open] = await Promise.all([api('/jobs'), api('/verify'), api('/stats'), api(`/nodes/${folder}/uploads`)].map((p) => p.catch(() => null)))
-    if (st) stats = st
-    if (open && folder === currentId) unfinished = open
-    if (check) {
-      verify = check
-      if (check.done !== lastVerified) load()
-      lastVerified = check.done
-    }
-    if (!list) return
+  let lastVerified = -1
+  function gotVerify(check) {
+    verify = check
+    if (lastVerified !== -1 && check.done !== lastVerified) load()
+    lastVerified = check.done
+  }
+  function gotJobs(list) {
     jobs = list
     syncJobs(list)
     if (list.length !== lastJobs) load()
     lastJobs = list.length
   }
 
+  // Without the event stream everything is polled, as before.
+  async function poll() {
+    const folder = currentId
+    const [list, check, st, open] = await Promise.all([api('/jobs'), api('/verify'), api('/stats'), api(`/nodes/${folder}/uploads`)].map((p) => p.catch(() => null)))
+    if (st) stats = st
+    if (open && folder === currentId) unfinished = open
+    if (check) gotVerify(check)
+    if (list) gotJobs(list)
+  }
+
+  // Changes from elsewhere (another tab, the app, SFTP) arrive as events and
+  // reload the folder, a little delayed so a burst of changes loads once.
+  let reloadTimer = 0
+  function reloadSoon() {
+    clearTimeout(reloadTimer)
+    reloadTimer = setTimeout(load, 250)
+  }
+
+  // The Android app opens its admin pages as #settings, #logs or #shares.
+  $effect(() => {
+    const hash = location.hash.slice(1)
+    if (hash === 'settings') modal = { type: 'settings' }
+    else if (hash === 'logs' || hash === 'shares') setMode(hash)
+  })
+
   $effect(() => {
     load()
-    poll()
-    const timer = setInterval(poll, 2000)
-    return () => clearInterval(timer)
+    if (!live()) poll()
+    const offs = [
+      on('stats', (st) => (stats = st)),
+      on('verify', gotVerify),
+      on('jobs', gotJobs),
+      on('files', reloadSoon),
+      on('open', reloadSoon),
+    ]
+    const timer = setInterval(() => {
+      if (!live()) poll()
+    }, 2000)
+    return () => {
+      offs.forEach((off) => off())
+      clearInterval(timer)
+      clearTimeout(reloadTimer)
+    }
   })
 
   const pendingTotal = $derived(uploads.items.filter((i) => ['queued', 'running', 'server'].includes(i.state)).length)
@@ -904,7 +938,7 @@
               ondragover={(e) => { if (node.isDir && !hasFiles(e)) e.preventDefault() }}
               ondrop={(e) => dropOnFolder(e, node)}
             >
-              <FileIcon {node} size={56} />
+              <span class="media"><FileIcon {node} size={node.thumb ? 88 : 56} thumb /></span>
               <span>{node.name}</span>
               {#if node.shared}<i class="shared corner" title="Wird geteilt"><Icon name="link" size={14} /></i>{/if}
             </button>
@@ -1344,6 +1378,13 @@
     background: none;
     cursor: default;
     min-width: 0;
+  }
+  .tile .media {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 88px;
+    height: 88px;
   }
   .tile:hover {
     background: var(--hover);
