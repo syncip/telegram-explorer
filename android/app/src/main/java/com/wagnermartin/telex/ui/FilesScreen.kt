@@ -6,7 +6,6 @@ import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -196,7 +195,9 @@ fun FilesScreen(
         }
     }
     val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { upload(it) }
-    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(100)) { upload(it) }
+    // The system file picker, not the photo picker: the photo picker hands out
+    // numbers like 1000000034.jpg instead of the real file names.
+    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { upload(it) }
     var cameraFile by rememberSaveable { mutableStateOf<String?>(null) }
     fun cameraUpload(ok: Boolean) {
         val f = cameraFile?.let(::File) ?: return
@@ -397,7 +398,7 @@ fun FilesScreen(
                 )
                 SheetItem(Icons.Default.PhotoLibrary, "Fotos und Videos") {
                     addSheet = false; app.expectExternal()
-                    pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                    pickMedia.launch(arrayOf("image/*", "video/*"))
                 }
                 SheetItem(Icons.Default.UploadFile, "Dateien") { addSheet = false; app.expectExternal(); pickFiles.launch(arrayOf("*/*")) }
                 SheetItem(Icons.Default.CameraAlt, "Foto aufnehmen") { addSheet = false; app.expectExternal(); takePhoto.launch(cameraUri("jpg", "IMG")) }
