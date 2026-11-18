@@ -29,6 +29,8 @@ A self-hosted file manager with a Windows Explorer look that uses your own Teleg
 ## Features
 
 - **Explorer interface:** folder tree, list and grid view, drag and drop, cut and paste, context menus, search, preview, light and dark mode (following the system or chosen by hand), and a layout that works on phones.
+- **Previews and live updates:** photos and videos show a small preview in the grid (made on the server with ffmpeg, encrypted like the file itself), and changes from another browser, the Android app, SFTP or WebDAV appear right away without reloading.
+- **Android app:** a native app with fingerprint lock, background uploads, sharing from other apps and downloads, see [Android app](#android-app).
 - **Large files:** files of any size are split into segments. Uploads resume after an interruption and failed transfers are retried. Each file shows whether it is on its way to the server, on its way to Telegram or finished.
 - **Optional encryption:** encrypted files are unreadable to Telegram. Unencrypted files stay normal documents you can download directly in Telegram.
 - **Sharing:** public links with optional password, a lifetime from one minute to 100 years, and a download limit. Links open images, videos and PDFs directly. Shared files are marked in the list, and a share can be changed or ended at any time, including a new link.
@@ -241,23 +243,28 @@ Like SFTP, written files first land in temporary storage and are transferred to 
 
 ## Android app
 
-`android/` holds an Android app (Android 11 or newer) for the same server. It shows the web interface and adds what a browser tab cannot do:
+`android/` holds a native Android app (Android 11 or newer) for the same server, made for moving files between phone and PC:
 
+- **Files:** list and grid with photo and video previews, sorting, search, a breadcrumb path, pull to refresh, and a menu on every row. Swipe a row to the side to move it to the trash, with *Rückgängig* in the note that follows. Long press selects several files.
+- **Viewer:** swipe through the photos and videos of a folder, zoom with two fingers or a double tap, and play videos while they stream.
+- **Upload:** *Hinzufügen* picks photos, videos or any files, or takes a photo or video with the camera. *Teilen → Telegram Explorer* from any other app asks for a target folder. Uploads run in the background with a notification, survive a weak connection and continue where they stopped; a name that already exists gets a number added.
+- **Download:** *Herunterladen* saves to the *Download* folder (folders and several files as a ZIP), *Öffnen mit …* opens a file in another app, and *Senden an …* hands it to any app, for example a messenger.
+- **Live:** changes made on the PC appear on the phone within a second and the other way round, without reloading.
+- **Shares, trash and more:** links can be created and copied with one tap, shares and the trash have their own tabs, and the full web interface stays available under *Mehr* for the settings, the log and 2FA.
+- **Stays logged in:** the app has its own login that lasts 180 days after the last use and survives server restarts. Every logged-in phone and browser is listed under *Einstellungen → Sicherheit → Angemeldete Geräte* and can be logged out there.
 - **App lock:** the app asks for your fingerprint when it opens and after a pause you choose (right away up to an hour). *Bildschirminhalt schützen* blocks screenshots and the preview in the recent apps list.
-- **Fingerprint login:** after you log in or unlock the vault once, the app offers to keep the password and the passphrase behind your fingerprint. After a server restart one fingerprint logs you in and unlocks the vault. With 2FA the app fills in the login and you type only the code. The values are encrypted with an Android Keystore key that works only after a fingerprint check and that Android deletes when fingerprints are added or removed.
-- **Sharing:** *Teilen → Telegram Explorer* from any app uploads to the folder that is open.
-- **Downloads** go to the *Download* folder through Android's download manager, PDFs open in your PDF app, and whole folders can be uploaded.
-- **Touch layout:** larger buttons and text on phones (this also applies in mobile browsers), and an extra text size setting in the app.
+- **Fingerprint login:** after you log in or unlock the vault once, the app offers to keep the password and the passphrase behind your fingerprint. After a server restart one fingerprint unlocks the vault. With 2FA the app fills in the login and you type only the code. The values are encrypted with an Android Keystore key that works only after a fingerprint check and that Android deletes when fingerprints are added or removed.
+- **Large text:** buttons and text follow the phone's text size, and the app settings make them larger still.
 
 On first start the app asks for the address you open in the browser, for example `https://explorer.example.com`. Plain `http://` works for a home network or VPN; the app warns about it. A self-signed certificate must first be installed in Android as a user certificate.
 
 Build it with JDK 17 or newer and the Android SDK:
 
 ```bash
-cd android && ./gradlew assembleDebug
+cd android && ./gradlew assembleRelease
 ```
 
-The APK is `android/app/build/outputs/apk/debug/app-debug.apk`. For a signed release build put `storeFile`, `storePassword`, `keyAlias` and `keyPassword` into `~/.telex-signing/keystore.properties` (or point `telex.keystoreProperties` in `android/local.properties` elsewhere) and run `./gradlew assembleRelease`.
+Put `storeFile`, `storePassword`, `keyAlias` and `keyPassword` into `~/.telex-signing/keystore.properties` (or point `telex.keystoreProperties` in `android/local.properties` elsewhere) first; the signed APK is then `android/app/build/outputs/apk/release/app-release.apk`. `./gradlew assembleDebug` builds an unsigned test version without a key. The app needs the server from the same version, because it uses the device login, the previews and the live events added with it.
 
 ## Encryption
 

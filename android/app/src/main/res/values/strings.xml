@@ -58,6 +58,24 @@
     <string name="share_read_failed">Eine geteilte Datei konnte nicht gelesen werden.</string>
     <string name="file_chooser_failed">Dateiauswahl nicht möglich.</string>
 
+    <string name="share_no_file">Hier lassen sich nur Dateien speichern, kein Text.</string>
+    <string name="web_title">Webansicht</string>
+    <string name="web_settings">Server-Einstellungen</string>
+    <string name="web_logs">Protokoll</string>
+    <string name="channel_uploads">Uploads</string>
+    <string name="upload_notification">Lädt hoch: %1$s</string>
+    <string name="upload_notification_to">nach „%1$s“</string>
+    <string name="upload_no_server">Kein Server eingerichtet</string>
+    <string name="upload_logged_out">Nicht angemeldet</string>
+    <string name="upload_unknown_size">Größe der Datei unbekannt</string>
+    <string name="upload_no_access">Kein Zugriff mehr auf die Datei</string>
+    <string name="upload_name_taken">Name ist schon vergeben</string>
+    <string name="upload_changed">Die Datei hat sich während des Uploads geändert</string>
+    <string name="upload_failed">Upload fehlgeschlagen</string>
+    <string name="pref_server_change">Server wechseln?</string>
+    <string name="pref_server_change_text">Die App meldet sich ab und löscht die gespeicherten Anmeldedaten. Danach gibst du die neue Adresse ein.</string>
+    <string name="pref_server_change_yes">Wechseln</string>
+
     <string name="settings_title">App-Einstellungen</string>
     <string name="pref_cat_server">Server</string>
     <string name="pref_server">Serveradresse</string>
