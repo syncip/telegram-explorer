@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
+    <!-- Files fetched for opening in or sending to another app. -->
     <cache-path name="open" path="open/" />
-    <cache-path name="shared" path="shared/" />
+    <!-- Photos and videos taken for upload. -->
+    <files-path name="outbox" path="outbox/" />
 </paths>

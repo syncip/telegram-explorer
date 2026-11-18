@@ -43,7 +43,20 @@ class SettingsActivity : AppCompatActivity() {
             setPreferencesFromResource(R.xml.preferences, rootKey)
 
             pref("server").setOnPreferenceClickListener {
-                startActivity(Intent(requireContext(), ServerActivity::class.java))
+                MaterialAlertDialogBuilder(requireContext())
+                    .setTitle(R.string.pref_server_change)
+                    .setMessage(R.string.pref_server_change_text)
+                    .setPositiveButton(R.string.pref_server_change_yes) { _, _ ->
+                        val app = requireContext().applicationContext as TelexApp
+                        com.wagnermartin.telex.upload.Uploads.cancelAll(requireContext())
+                        app.prefs.serverUrl = null
+                        app.serverChanged()
+                        store.clear()
+                        startActivity(Intent(requireContext(), MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP))
+                        requireActivity().finish()
+                    }
+                    .setNegativeButton(R.string.cancel, null)
+                    .show()
                 true
             }
 
@@ -77,6 +90,8 @@ class SettingsActivity : AppCompatActivity() {
                     destroy()
                 }
                 File(requireContext().cacheDir, "open").deleteRecursively()
+                File(requireContext().cacheDir, "images").deleteRecursively()
+                coil3.SingletonImageLoader.get(requireContext()).memoryCache?.clear()
                 Toast.makeText(requireContext(), R.string.pref_cache_cleared, Toast.LENGTH_SHORT).show()
                 true
             }
