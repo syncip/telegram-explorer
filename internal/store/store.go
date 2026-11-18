@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -88,6 +89,16 @@ CREATE TABLE IF NOT EXISTS uploads (
 	created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS sessions (
+	hash       TEXT PRIMARY KEY,
+	id         TEXT NOT NULL UNIQUE,
+	kind       TEXT NOT NULL,
+	name       TEXT NOT NULL,
+	ip         TEXT NOT NULL DEFAULT '',
+	created_at INTEGER NOT NULL,
+	last_seen  INTEGER NOT NULL,
+	expires_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS events (
 	id      INTEGER PRIMARY KEY,
 	ts      INTEGER NOT NULL,
@@ -131,14 +142,14 @@ type Event struct {
 // so a failure here is only written to the process log.
 func (s *Store) Log(level, kind, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
-	if _, err := s.db.Exec(`INSERT INTO events(ts, level, kind, message) VALUES (?, ?, ?, ?)`, time.Now().Unix(), level, kind, msg); err != nil {
+	if _, err := s.quietExec(`INSERT INTO events(ts, level, kind, message) VALUES (?, ?, ?, ?)`, time.Now().Unix(), level, kind, msg); err != nil {
 		log.Printf("event: %v", err)
 		return
 	}
 	if level != LevelInfo {
 		log.Printf("%s %s: %s", level, kind, msg)
 	}
-	s.db.Exec(`DELETE FROM events WHERE id <= (SELECT MAX(id) FROM events) - ?`, eventsKept)
+	s.quietExec(`DELETE FROM events WHERE id <= (SELECT MAX(id) FROM events) - ?`, eventsKept)
 }
 
 // Events returns the newest events, filtered when level or kind are set.
@@ -162,7 +173,7 @@ func (s *Store) Events(level, kind string, limit int) ([]Event, error) {
 
 // ClearEvents empties the protocol.
 func (s *Store) ClearEvents() error {
-	_, err := s.db.Exec(`DELETE FROM events`)
+	_, err := s.quietExec(`DELETE FROM events`)
 	return err
 }
 
@@ -206,7 +217,9 @@ type Node struct {
 	Shared       bool   `json:"shared"`
 	Segments     int64  `json:"segments"`
 	// FileCount is the number of files below a folder.
-	FileCount  int64  `json:"fileCount,omitempty"`
+	FileCount int64 `json:"fileCount,omitempty"`
+	// Thumb tells the client that /api/nodes/{id}/thumb has a preview.
+	Thumb      bool   `json:"thumb,omitempty"`
 	WrappedKey []byte `json:"-"`
 	StagePath  string `json:"-"`
 	Attempts   int    `json:"-"`
@@ -265,7 +278,12 @@ type Upload struct {
 }
 
 // Store wraps the database.
-type Store struct{ db *sql.DB }
+type Store struct {
+	db *sql.DB
+	// quiet counts writes that do not change files, like log lines and
+	// session renewals, so FileChanges can leave them out.
+	quiet atomic.Int64
+}
 
 // Open creates or opens the database.
 func Open(path string) (*Store, error) {
@@ -318,6 +336,23 @@ func (s *Store) Changes() (int64, error) {
 	var n int64
 	err := s.db.QueryRow(`SELECT total_changes()`).Scan(&n)
 	return n, err
+}
+
+// FileChanges is like Changes but leaves out log lines and session renewals,
+// so it only moves when files, folders, shares or settings change.
+func (s *Store) FileChanges() (int64, error) {
+	n, err := s.Changes()
+	return n - s.quiet.Load(), err
+}
+
+func (s *Store) quietExec(query string, args ...any) (sql.Result, error) {
+	res, err := s.db.Exec(query, args...)
+	if err == nil {
+		if n, err := res.RowsAffected(); err == nil {
+			s.quiet.Add(n)
+		}
+	}
+	return res, err
 }
 
 // Snapshot writes a consistent copy of the database to path.

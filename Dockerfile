@@ -17,7 +17,7 @@ COPY --from=ui /src/web/dist ./web/dist
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /telex ./cmd/telex
 
 FROM alpine:3.22
-RUN apk add --no-cache ca-certificates mailcap \
+RUN apk add --no-cache ca-certificates mailcap ffmpeg \
     && addgroup -S -g 10001 telex && adduser -S -u 10001 -G telex telex \
     && mkdir /data && chown telex:telex /data
 COPY --from=app /telex /usr/local/bin/telex

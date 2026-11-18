@@ -2,16 +2,38 @@
   import { api } from './api.js'
   import Explorer from './Explorer.svelte'
   import Gate from './Gate.svelte'
+  import { live, on, startLive, stopLive } from './live.js'
 
   let app = $state(null)
 
   async function refresh() {
-    app = await api('/state')
+    try {
+      app = await api('/state')
+    } catch {}
   }
+
+  // Logged in, the event stream reports vault and Telegram changes; before
+  // that, and when the stream does not get through, the state is polled.
+  const loggedIn = $derived(!!app?.loggedIn)
+  $effect(() => {
+    if (!loggedIn) return
+    startLive()
+    const offs = [
+      on('state', (s) => (app = { ...app, ...s })),
+      on('logout', refresh),
+      on('closed', refresh),
+    ]
+    return () => {
+      offs.forEach((off) => off())
+      stopLive()
+    }
+  })
 
   $effect(() => {
     refresh()
-    const timer = setInterval(refresh, 3000)
+    const timer = setInterval(() => {
+      if (!live()) refresh()
+    }, 3000)
     return () => clearInterval(timer)
   })
 

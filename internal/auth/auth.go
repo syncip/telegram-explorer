@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base32"
 	"encoding/base64"
@@ -24,7 +25,11 @@ import (
 )
 
 const (
-	sessionTTL = 7 * 24 * time.Hour
+	// SessionTTL is how long a browser session lasts.
+	SessionTTL = 7 * 24 * time.Hour
+	// AppSessionTTL is how long an unused app login lasts; every use renews it.
+	AppSessionTTL = 180 * 24 * time.Hour
+	touchEvery    = time.Minute
 	freeTries  = 5
 	maxLock    = 15 * time.Minute
 )
@@ -48,14 +53,22 @@ type Manager struct {
 	Limiter *Limiter
 
 	mu       sync.Mutex
-	sessions map[string]time.Time
-	pending  string // TOTP secret during enrollment
-	lastStep int64  // last accepted TOTP step, against replay
+	touched  map[string]time.Time // session id -> last recorded use
+	pending  string               // TOTP secret during enrollment
+	lastStep int64                // last accepted TOTP step, against replay
+}
+
+// Device describes who a new session is for.
+type Device struct {
+	// App marks a login of the Android app, which lasts longer and renews itself.
+	App  bool
+	Name string
+	IP   string
 }
 
 // New creates a manager.
 func New(s *store.Store) *Manager {
-	return &Manager{Store: s, Limiter: NewLimiter(), sessions: map[string]time.Time{}}
+	return &Manager{Store: s, Limiter: NewLimiter(), touched: map[string]time.Time{}}
 }
 
 // HashPassword derives an encoded Argon2id hash.
@@ -112,7 +125,7 @@ func (m *Manager) Save(u *User) error {
 }
 
 // Login checks the web credentials and returns a session token.
-func (m *Manager) Login(username, password, code string) (string, error) {
+func (m *Manager) Login(username, password, code string, d Device) (string, error) {
 	u, err := m.User()
 	if err != nil {
 		return "", err
@@ -127,44 +140,96 @@ func (m *Manager) Login(username, password, code string) (string, error) {
 	if u.TOTP != "" && !m.checkTOTP(u.TOTP, code, time.Now()) {
 		return "", ErrInvalid
 	}
-	return m.NewSession(), nil
+	return m.NewSession(d)
 }
 
-// NewSession starts a session without checking credentials.
-func (m *Manager) NewSession() string {
-	token := Token(32)
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func ttl(kind string) time.Duration {
+	if kind == store.SessionApp {
+		return AppSessionTTL
+	}
+	return SessionTTL
+}
+
+// NewSession starts a session without checking credentials. Sessions live in
+// the database, so they survive a restart of the server.
+func (m *Manager) NewSession(d Device) (string, error) {
 	now := time.Now()
-	for t, exp := range m.sessions {
-		if now.After(exp) {
-			delete(m.sessions, t)
+	m.Store.DeleteExpiredSessions(now.Unix())
+	kind := store.SessionWeb
+	if d.App {
+		kind = store.SessionApp
+	}
+	name := strings.TrimSpace(d.Name)
+	if len(name) > 80 {
+		name = name[:80]
+	}
+	token := Token(32)
+	se := &store.Session{ID: Token(9), Kind: kind, Name: name, IP: d.IP,
+		CreatedAt: now.Unix(), LastSeen: now.Unix(), ExpiresAt: now.Add(ttl(kind)).Unix()}
+	if err := m.Store.CreateSession(hashToken(token), se); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// Session returns the live session of a token and records its use. App
+// sessions are renewed with every use.
+func (m *Manager) Session(token, ip string) (*store.Session, bool) {
+	if token == "" {
+		return nil, false
+	}
+	se, err := m.Store.SessionByHash(hashToken(token))
+	now := time.Now()
+	if err != nil || now.Unix() >= se.ExpiresAt {
+		return nil, false
+	}
+	m.mu.Lock()
+	due := now.Sub(m.touched[se.ID]) >= touchEvery
+	if due {
+		m.touched[se.ID] = now
+	}
+	m.mu.Unlock()
+	if due {
+		expires := se.ExpiresAt
+		if se.Kind == store.SessionApp {
+			expires = now.Add(AppSessionTTL).Unix()
+		}
+		if m.Store.TouchSession(se.ID, ip, now.Unix(), expires) == nil {
+			se.LastSeen, se.ExpiresAt, se.IP = now.Unix(), expires, ip
 		}
 	}
-	m.sessions[token] = now.Add(sessionTTL)
-	return token
+	return se, true
 }
 
 // ValidSession reports whether a token belongs to a live session.
 func (m *Manager) ValidSession(token string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	exp, ok := m.sessions[token]
-	return ok && time.Now().Before(exp)
+	se, err := m.Store.SessionByHash(hashToken(token))
+	return err == nil && time.Now().Unix() < se.ExpiresAt
 }
 
 // Logout ends a session.
 func (m *Manager) Logout(token string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.sessions, token)
+	m.Store.DeleteSessionByHash(hashToken(token))
 }
 
-// LogoutAll ends every session.
-func (m *Manager) LogoutAll() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.sessions = map[string]time.Time{}
+// LogoutAll ends every session except the one with keepID ("" ends all).
+func (m *Manager) LogoutAll(keepID string) error {
+	return m.Store.DeleteSessions(keepID)
+}
+
+// Sessions lists the live sessions.
+func (m *Manager) Sessions() ([]*store.Session, error) {
+	return m.Store.Sessions(time.Now().Unix())
+}
+
+// Revoke ends the session with this id.
+func (m *Manager) Revoke(id string) error {
+	return m.Store.DeleteSession(id)
 }
 
 // SFTPEnabled reports whether an SFTP password is set.

@@ -1,13 +1,21 @@
 <script>
   import { kindOf } from './api.js'
 
-  let { node, size = 20, open = false } = $props()
+  // thumb shows the server's preview of photos and videos instead of the icon.
+  let { node, size = 20, open = false, thumb = false } = $props()
   const kind = $derived(kindOf(node))
+  let broken = $state(false)
+  const src = $derived(thumb && node.thumb && !broken ? `/api/nodes/${node.id}/thumb?v=${node.size}-${node.mtime}` : '')
   const tint = { image: '#2f9e6e', video: '#8a5cf6', audio: '#e0568a', archive: '#c98a2c', pdf: '#d13438', doc: '#2b7cd3', code: '#5b6b7b', file: '#8a8f98' }
 </script>
 
 <span class="wrap" style="width:{size}px;height:{size}px">
-  {#if kind === 'folder'}
+  {#if src}
+    <img class="thumb" {src} alt="" loading="lazy" decoding="async" width={size} height={size} onerror={() => (broken = true)} />
+    {#if kind === 'video'}
+      <svg class="play" width={Math.round(size / 3)} height={Math.round(size / 3)} viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="11" fill="rgb(0 0 0 / .55)" /><path fill="#fff" d="M9.5 7.5v9l7-4.5z" /></svg>
+    {/if}
+  {:else if kind === 'folder'}
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">
       <path fill="#e8a820" d="M2 6.5A2.5 2.5 0 0 1 4.5 4h4.3c.6 0 1.2.2 1.6.7L12 6.3h7.5A2.5 2.5 0 0 1 22 8.8v8.7a2.5 2.5 0 0 1-2.5 2.5h-15A2.5 2.5 0 0 1 2 17.5z" />
       <path fill={open ? '#ffe28a' : '#f8cf5a'} d="M2 9.6c0-.9.7-1.6 1.6-1.6h16.8c.9 0 1.6.7 1.6 1.6v7.9a2.5 2.5 0 0 1-2.5 2.5h-15A2.5 2.5 0 0 1 2 17.5z" />
@@ -33,6 +41,19 @@
     position: relative;
     display: inline-flex;
     flex: none;
+  }
+  .thumb {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 6px;
+    background: var(--hover);
+  }
+  .play {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
   }
   .badge {
     position: absolute;

@@ -26,6 +26,7 @@ import (
 	"telegram-explorer/internal/sftpd"
 	"telegram-explorer/internal/store"
 	"telegram-explorer/internal/telegram"
+	"telegram-explorer/internal/thumbs"
 	"telegram-explorer/internal/vault"
 	"telegram-explorer/internal/web"
 )
@@ -129,7 +130,9 @@ func run() error {
 	}
 
 	server := &web.Server{Engine: engine, Auth: manager, UI: webui.FS(), OnUnlock: onUnlock, OnSFTPChange: sftpServer.Sync, WebDAV: davServer,
-		TrustProxy: os.Getenv("TRUST_PROXY") == "1", SetupCode: auth.Token(9)}
+		TrustProxy: os.Getenv("TRUST_PROXY") == "1", SetupCode: auth.Token(9),
+		Thumbs: &thumbs.Maker{Dir: filepath.Join(dataDir, "thumbs"), FFmpeg: thumbs.FindFFmpeg(), Vault: engine.Vault,
+			Open: func(ctx context.Context, n *store.Node) (thumbs.Source, error) { return engine.Open(ctx, n) }}}
 	if tgClient != nil {
 		server.Telegram = tgClient
 		server.Bots = tgClient
@@ -146,6 +149,7 @@ func run() error {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
+	httpServer.RegisterOnShutdown(server.CloseStreams)
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)

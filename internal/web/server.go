@@ -19,6 +19,7 @@ import (
 	"telegram-explorer/internal/files"
 	"telegram-explorer/internal/store"
 	"telegram-explorer/internal/telegram"
+	"telegram-explorer/internal/thumbs"
 	"telegram-explorer/internal/vault"
 )
 
@@ -55,7 +56,10 @@ type Server struct {
 	WebDAV *davd.Server
 	// Bots is nil with the local backend.
 	Bots HelperBots
+	// Thumbs makes previews of photos and videos; nil turns them off.
+	Thumbs *thumbs.Maker
 
+	streams     streams
 	uploadLocks sync.Map
 	grants      sync.Map // share password grant -> expiry
 }
@@ -133,18 +137,40 @@ func (s *Server) secure(r *http.Request) bool {
 	return r.TLS != nil || (s.TrustProxy && r.Header.Get("X-Forwarded-Proto") == "https")
 }
 
+type sessionKey struct{}
+
+// token returns the session token of a request: a bearer token from the app,
+// or the cookie of the browser.
+func token(r *http.Request) (tok string, bearer bool) {
+	if h := r.Header.Get("Authorization"); len(h) > 7 && strings.EqualFold(h[:7], "Bearer ") {
+		return strings.TrimSpace(h[7:]), true
+	}
+	if c, err := r.Cookie(cookieName); err == nil {
+		return c.Value, false
+	}
+	return "", false
+}
+
+// session returns the session of a request that went through authed.
+func session(r *http.Request) *store.Session {
+	se, _ := r.Context().Value(sessionKey{}).(*store.Session)
+	return se
+}
+
 // authed requires a session and, because every state change goes through it, a
-// custom header that a cross-site form cannot send.
+// custom header that a cross-site form cannot send. A bearer token is never
+// sent by a browser on its own, so it needs no such header.
 func (s *Server) authed(h handler) http.HandlerFunc {
 	return s.wrap(func(w http.ResponseWriter, r *http.Request) error {
-		c, err := r.Cookie(cookieName)
-		if err != nil || !s.Auth.ValidSession(c.Value) {
+		tok, bearer := token(r)
+		se, ok := s.Auth.Session(tok, s.clientIP(r))
+		if !ok {
 			return httpError{http.StatusUnauthorized, "nicht angemeldet"}
 		}
-		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get("X-Telex") != "1" {
+		if !bearer && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get("X-Telex") != "1" {
 			return httpError{http.StatusForbidden, "CSRF-Prüfung fehlgeschlagen"}
 		}
-		return h(w, r)
+		return h(w, r.WithContext(context.WithValue(r.Context(), sessionKey{}, se)))
 	})
 }
 
@@ -167,6 +193,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/login", s.wrap(s.login))
 	mux.HandleFunc("POST /api/logout", s.authed(s.logout))
 	mux.HandleFunc("POST /api/unlock", s.authed(s.unlock))
+	mux.HandleFunc("GET /api/events", s.authed(s.events))
+	mux.HandleFunc("GET /api/sessions", s.authed(s.listSessions))
+	mux.HandleFunc("DELETE /api/sessions/{id}", s.authed(s.revokeSession))
+	mux.HandleFunc("DELETE /api/sessions", s.authed(s.revokeOtherSessions))
 
 	mux.HandleFunc("POST /api/telegram/phone", s.open(s.tgPhone))
 	mux.HandleFunc("POST /api/telegram/code", s.open(s.tgCode))
@@ -175,6 +205,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/nodes/{id}", s.open(s.getNode))
 	mux.HandleFunc("GET /api/nodes/{id}/children", s.open(s.children))
 	mux.HandleFunc("GET /api/nodes/{id}/content", s.open(s.content))
+	mux.HandleFunc("GET /api/nodes/{id}/thumb", s.open(s.thumb))
 	mux.HandleFunc("POST /api/nodes/{id}/mkdir", s.open(s.mkdir))
 	mux.HandleFunc("PATCH /api/nodes/{id}", s.open(s.patchNode))
 	mux.HandleFunc("POST /api/nodes/{id}/retry", s.open(s.retry))
@@ -252,7 +283,7 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	out := map[string]any{"needsSetup": user == nil, "loggedIn": false, "locked": s.Engine.Vault() == nil}
-	if c, err := r.Cookie(cookieName); err == nil && s.Auth.ValidSession(c.Value) {
+	if tok, _ := token(r); tok != "" && s.Auth.ValidSession(tok) {
 		out["loggedIn"] = true
 		out["username"] = user.Username
 		if s.Telegram != nil && s.Engine.Vault() != nil {
@@ -306,12 +337,21 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) error {
 	}
 	s.Engine.SetVault(v)
 	s.OnUnlock()
-	s.sessionCookie(w, r, s.Auth.NewSession(), int((7 * 24 * time.Hour).Seconds()))
+	tok, err := s.Auth.NewSession(s.device(r, false, ""))
+	if err != nil {
+		return err
+	}
+	s.sessionCookie(w, r, tok, int(auth.SessionTTL.Seconds()))
 	return writeJSON(w, map[string]bool{"ok": true})
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) error {
-	var in struct{ Username, Password, Code string }
+	var in struct {
+		Username, Password, Code string
+		// App asks for a long-lived bearer token instead of a cookie.
+		App    bool
+		Device string
+	}
 	if err := readJSON(r, &in); err != nil {
 		return err
 	}
@@ -319,7 +359,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) error {
 	if d := s.Auth.Limiter.Blocked(key); d > 0 {
 		return httpError{http.StatusTooManyRequests, "zu viele Fehlversuche, bitte " + d.Round(time.Second).String() + " warten"}
 	}
-	token, err := s.Auth.Login(in.Username, in.Password, in.Code)
+	tok, err := s.Auth.Login(in.Username, in.Password, in.Code, s.device(r, in.App, in.Device))
 	if errors.Is(err, auth.ErrInvalid) {
 		s.Auth.Limiter.Fail(key)
 		s.Engine.Store.Log(store.LevelWarn, store.KindLogin, "Fehlgeschlagene Anmeldung von %s", s.clientIP(r))
@@ -329,16 +369,78 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	s.Auth.Limiter.Success(key)
+	if in.App {
+		s.Engine.Store.Log(store.LevelInfo, store.KindLogin, "Anmeldung der App „%s“ von %s", in.Device, s.clientIP(r))
+		return writeJSON(w, map[string]any{"ok": true, "token": tok})
+	}
 	s.Engine.Store.Log(store.LevelInfo, store.KindLogin, "Anmeldung von %s", s.clientIP(r))
-	s.sessionCookie(w, r, token, int((7 * 24 * time.Hour).Seconds()))
+	s.sessionCookie(w, r, tok, int(auth.SessionTTL.Seconds()))
 	return writeJSON(w, map[string]bool{"ok": true})
 }
 
+// device names a new session after the app's device or the browser.
+func (s *Server) device(r *http.Request, app bool, name string) auth.Device {
+	if name == "" {
+		name = browserName(r.UserAgent())
+	}
+	return auth.Device{App: app, Name: name, IP: s.clientIP(r)}
+}
+
+// browserName turns a user agent into something like "Firefox unter Windows".
+func browserName(ua string) string {
+	browser := "Browser"
+	for _, b := range []struct{ key, name string }{
+		{"Edg/", "Edge"}, {"OPR/", "Opera"}, {"Firefox/", "Firefox"}, {"Chrome/", "Chrome"}, {"Safari/", "Safari"},
+	} {
+		if strings.Contains(ua, b.key) {
+			browser = b.name
+			break
+		}
+	}
+	for _, o := range []struct{ key, name string }{
+		{"Android", "Android"}, {"iPhone", "iPhone"}, {"iPad", "iPad"}, {"Windows", "Windows"},
+		{"Mac OS X", "macOS"}, {"CrOS", "ChromeOS"}, {"Linux", "Linux"},
+	} {
+		if strings.Contains(ua, o.key) {
+			return browser + " unter " + o.name
+		}
+	}
+	return browser
+}
+
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) error {
-	if c, err := r.Cookie(cookieName); err == nil {
-		s.Auth.Logout(c.Value)
+	if tok, _ := token(r); tok != "" {
+		s.Auth.Logout(tok)
 	}
 	s.sessionCookie(w, r, "", -1)
+	return writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) error {
+	list, err := s.Auth.Sessions()
+	if err != nil {
+		return err
+	}
+	current := session(r)
+	for _, se := range list {
+		se.Current = current != nil && se.ID == current.ID
+	}
+	return writeJSON(w, list)
+}
+
+func (s *Server) revokeSession(w http.ResponseWriter, r *http.Request) error {
+	if err := s.Auth.Revoke(r.PathValue("id")); err != nil {
+		return err
+	}
+	s.Engine.Store.Log(store.LevelInfo, store.KindLogin, "Gerät abgemeldet")
+	return writeJSON(w, map[string]bool{"ok": true})
+}
+
+func (s *Server) revokeOtherSessions(w http.ResponseWriter, r *http.Request) error {
+	if err := s.Auth.LogoutAll(session(r).ID); err != nil {
+		return err
+	}
+	s.Engine.Store.Log(store.LevelInfo, store.KindLogin, "Alle anderen Geräte abgemeldet")
 	return writeJSON(w, map[string]bool{"ok": true})
 }
 

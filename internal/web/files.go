@@ -19,7 +19,37 @@ import (
 	"telegram-explorer/internal/auth"
 	"telegram-explorer/internal/files"
 	"telegram-explorer/internal/store"
+	"telegram-explorer/internal/thumbs"
 )
+
+// marked flags the nodes that have a preview.
+func (s *Server) marked(list ...*store.Node) {
+	for _, n := range list {
+		n.Thumb = s.Thumbs.Supports(n)
+	}
+}
+
+func (s *Server) thumb(w http.ResponseWriter, r *http.Request) error {
+	n, err := s.liveNode(r)
+	if err != nil {
+		return err
+	}
+	data, err := s.Thumbs.Get(r.Context(), n)
+	switch {
+	case errors.Is(err, thumbs.ErrNone):
+		return httpError{http.StatusNotFound, err.Error()}
+	case errors.Is(err, thumbs.ErrLocked):
+		return files.ErrLocked
+	case err != nil:
+		return err
+	}
+	h := w.Header()
+	h.Set("Content-Type", "image/jpeg")
+	h.Set("Cache-Control", "private, max-age=2592000")
+	h.Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	_, err = w.Write(data)
+	return err
+}
 
 func (s *Server) getNode(w http.ResponseWriter, r *http.Request) error {
 	id, err := pathID(r, "id")
@@ -34,6 +64,7 @@ func (s *Server) getNode(w http.ResponseWriter, r *http.Request) error {
 	if err != nil && chain[len(chain)-1].IsDir {
 		return err
 	}
+	s.marked(chain[len(chain)-1])
 	return writeJSON(w, map[string]any{"node": chain[len(chain)-1], "path": chain, "encryptDefault": encrypt})
 }
 
@@ -46,6 +77,7 @@ func (s *Server) children(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	s.marked(list...)
 	return writeJSON(w, list)
 }
 
@@ -58,6 +90,7 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	s.marked(list...)
 	return writeJSON(w, list)
 }
 
@@ -181,6 +214,7 @@ func (s *Server) purge(w http.ResponseWriter, r *http.Request) error {
 		if err := s.Engine.Purge(id); err != nil {
 			return err
 		}
+		s.Thumbs.Remove(id)
 	}
 	return writeJSON(w, map[string]bool{"ok": true})
 }
@@ -537,6 +571,9 @@ func (s *Server) uploadChunk(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	if node.StagePath != "" {
+		s.Thumbs.FromFile(node, node.StagePath)
+	}
 	s.Engine.Store.Log(store.LevelInfo, store.KindUpload, "„%s“ im Browser hochgeladen (%d Bytes)", u.Name, u.Size)
 	s.Engine.Store.DeleteUpload(id)
 	s.uploadLocks.Delete(id)
@@ -732,8 +769,10 @@ func (s *Server) setPassword(w http.ResponseWriter, r *http.Request) error {
 	if err := s.Auth.Save(u); err != nil {
 		return err
 	}
-	s.Auth.LogoutAll()
-	s.sessionCookie(w, r, s.Auth.NewSession(), int((7 * 24 * time.Hour).Seconds()))
+	// Every other browser and app has to log in with the new password.
+	if err := s.Auth.LogoutAll(session(r).ID); err != nil {
+		return err
+	}
 	return writeJSON(w, map[string]bool{"ok": true})
 }
 

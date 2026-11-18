@@ -41,7 +41,26 @@
 
   const BLOCK_SIZES = [128, 256, 512, 1024, 2000]
 
+  let sessions = $state([])
+  const loadSessions = async () => (sessions = await api('/sessions'))
+  function ago(unix) {
+    const s = Date.now() / 1000 - unix
+    if (s < 120) return 'gerade eben'
+    if (s < 3600) return `vor ${Math.round(s / 60)} Minuten`
+    if (s < 86400 * 2) return `vor ${Math.round(s / 3600)} Stunden`
+    return `am ${new Date(unix * 1000).toLocaleDateString('de-DE')}`
+  }
+  function revoke(se) {
+    if (!confirm(`„${se.name || 'Unbekanntes Gerät'}“ abmelden? Dort muss man sich danach neu anmelden.`)) return
+    run(() => api(`/sessions/${se.id}`, { method: 'DELETE' }), 'Gerät abgemeldet.')
+  }
+  function revokeOthers() {
+    if (!confirm('Alle anderen Browser und Apps abmelden?')) return
+    run(() => api('/sessions', { method: 'DELETE' }), 'Alle anderen Geräte sind abgemeldet.')
+  }
+
   async function load() {
+    loadSessions().catch(() => {})
     info = await api('/settings')
     blockMiB = info.blockMiB
     limitUp = toMiB(info.limitUp)
@@ -236,6 +255,23 @@
           <button class="secondary" onclick={() => run(() => post('/backup'), 'Backup wurde gespeichert.')}>Jetzt sichern</button>
         </section>
       {:else if tab === 'security'}
+        <section>
+          <h3>Angemeldete Geräte</h3>
+          <p>Browser bleiben 7 Tage angemeldet, die Android-App bleibt angemeldet, solange sie mindestens alle 180 Tage genutzt wird. Ein neues Web-Kennwort meldet alle anderen ab.</p>
+          <ul class="bots devices">
+            {#each sessions as se (se.id)}
+              <li>
+                <span class="name">{se.name || 'Unbekanntes Gerät'}</span>
+                <span class="state">{se.kind === 'app' ? 'App' : 'Browser'} · {se.current ? 'dieses Gerät' : ago(se.lastSeen)}{se.ip ? ` · ${se.ip}` : ''}</span>
+                {#if !se.current}<button class="secondary" onclick={() => revoke(se)}>Abmelden</button>{/if}
+              </li>
+            {/each}
+          </ul>
+          {#if sessions.length > 1}
+            <button class="secondary" onclick={revokeOthers}>Alle anderen abmelden</button>
+          {/if}
+        </section>
+
         <section>
           <h3>Zugangsdaten ändern</h3>
           <form onsubmit={saveCredential}>
@@ -444,6 +480,17 @@
   }
   .token {
     margin-top: 12px;
+  }
+  @media (max-width: 560px) {
+    .devices li {
+      flex-wrap: wrap;
+      gap: 2px 12px;
+    }
+    .devices .state {
+      flex-basis: 100%;
+      order: 2;
+      white-space: normal;
+    }
   }
   .err {
     color: var(--danger);
