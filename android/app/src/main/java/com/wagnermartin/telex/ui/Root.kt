@@ -156,7 +156,6 @@ private fun Main(vm: AppViewModel) {
     var tab by rememberSaveable { mutableStateOf(Tab.FILES) }
     var viewing by remember { mutableStateOf<Pair<List<Node>, Node>?>(null) }
     var info by remember { mutableStateOf<Node?>(null) }
-    var editing by remember { mutableStateOf<Node?>(null) }
     val shared by vm.shared.collectAsState()
     val stats by vm.app.live.stats.collectAsState()
 
@@ -210,7 +209,7 @@ private fun Main(vm: AppViewModel) {
                 Tab.FILES -> FilesScreen(files, snackbar, onOpen = { n, list ->
                     if (viewable(n)) viewing = list.filter(::viewable) to n
                     else scope.launch { fetch(n)?.let { Files.open(context, it, n) } }
-                }, onEdit = { editing = it }, fetch = fetch)
+                }, onEdit = { com.wagnermartin.telex.EditorActivity.open(context, it.id) }, fetch = fetch)
                 Tab.SHARES -> SharesScreen(snackbar)
                 Tab.TRASH -> TrashScreen(snackbar)
                 Tab.MORE -> MoreScreen(vm)
@@ -219,7 +218,6 @@ private fun Main(vm: AppViewModel) {
     }
 
     viewing?.let { (list, start) -> Viewer(list, start, fetch, onInfo = { info = it }) { viewing = null } }
-    editing?.let { n -> files.api?.let { api -> TextEditor(n, api, onSaved = { files.load(quiet = true) }) { editing = null } } }
     info?.let { n -> PropertiesSheet(n, files.api) { info = null } }
 
     fetching?.let { n ->

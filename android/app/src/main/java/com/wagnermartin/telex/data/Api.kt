@@ -22,13 +22,10 @@ import java.io.IOException
 import java.net.URLEncoder
 
 /** An answer of the server other than 2xx, with its German message. */
-class ApiException(val status: Int, message: String, val body: String = "") : IOException(message) {
+class ApiException(val status: Int, message: String) : IOException(message) {
     val unauthorized get() = status == 401
     val locked get() = status == 423
     val conflict get() = status == 409
-
-    /** For a refused save: the id of the file that has the name now, if any. */
-    val current: Long? get() = runCatching { json.parseToJsonElement(body).jsonObject["current"]?.jsonPrimitive?.contentOrNull?.toLong() }.getOrNull()
 }
 
 val json = Json {
@@ -38,7 +35,6 @@ val json = Json {
 }
 
 private val JSON_TYPE = "application/json".toMediaType()
-private val TEXT_TYPE = "text/plain; charset=utf-8".toMediaType()
 
 /**
  * The JSON API of the server. [base] is the origin, for example
@@ -60,7 +56,7 @@ class Api(val base: String, val client: OkHttpClient) {
                 val text = res.body.string()
                 if (!res.isSuccessful) {
                     val msg = runCatching { json.parseToJsonElement(text).jsonObject["error"]?.jsonPrimitive?.contentOrNull }.getOrNull()
-                    throw ApiException(res.code, msg ?: "Fehler ${res.code}", text)
+                    throw ApiException(res.code, msg ?: "Fehler ${res.code}")
                 }
                 parse(text)
             }
@@ -105,27 +101,7 @@ class Api(val base: String, val client: OkHttpClient) {
     suspend fun createShare(nodeId: Long): String = send<ShareCreated>("POST", "/shares", buildJsonObject { put("nodeId", nodeId) }).token
     suspend fun deleteShare(token: String) = send<Unit>("DELETE", "/shares/$token", JsonObject(emptyMap()))
 
-    /** The raw bytes of a small file, for the text editor. */
-    suspend fun bytes(id: Long): ByteArray = withContext(Dispatchers.IO) {
-        client.newCall(Request.Builder().url(contentUrl(id)).build()).execute().use { res ->
-            if (!res.isSuccessful) {
-                val text = res.body.string()
-                val msg = runCatching { json.parseToJsonElement(text).jsonObject["error"]?.jsonPrimitive?.contentOrNull }.getOrNull()
-                throw ApiException(res.code, msg ?: "Fehler ${res.code}", text)
-            }
-            res.body.bytes()
-        }
-    }
-
-    /**
-     * Saves edited text as a new version of [id]. A 409 whose body names the
-     * current file means it changed elsewhere; [force] replaces it anyway.
-     */
-    suspend fun saveText(id: Long, content: ByteArray, force: Boolean = false): Node =
-        request("/nodes/$id/content" + if (force) "?force=1" else "", "PUT", content.toRequestBody(TEXT_TYPE)) {
-            json.decodeFromString(Node.serializer(), it)
-        }
-
+    /** An empty text file, opened in the live editor right after. */
     suspend fun newTextFile(parent: Long, name: String): Node = send("POST", "/nodes/$parent/textfile", buildJsonObject { put("name", name) })
 
     suspend fun jobs(): List<Job> = get("/jobs")

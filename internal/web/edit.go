@@ -52,22 +52,37 @@ func (s *Server) saveContent(w http.ResponseWriter, r *http.Request) error {
 		return files.ErrLocked
 	}
 
-	f, err := s.Engine.NewStageFile()
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxEdit+1))
 	if err != nil {
 		return err
 	}
-	written, err := io.Copy(f, io.LimitReader(r.Body, maxEdit+1))
+	if len(data) > maxEdit {
+		return httpError{http.StatusRequestEntityTooLarge, "Die Datei ist zu groß für den Editor (höchstens 10 MB)."}
+	}
+	node, err := s.storeText(n, data)
+	if err != nil {
+		return err
+	}
+	s.Engine.Store.Log(store.LevelInfo, store.KindUpload, "„%s“ im Editor gespeichert (%d Bytes)", n.Name, len(data))
+	return writeJSON(w, node)
+}
+
+// storeText stores data as the new version of the file n was edited from, in
+// the folder and under the name n has now. Whatever file has that name moves
+// to the trash, and its share links move to the new version.
+func (s *Server) storeText(n *store.Node, data []byte) (*store.Node, error) {
+	f, err := s.Engine.NewStageFile()
+	if err != nil {
+		return nil, err
+	}
+	_, err = f.Write(data)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
-	if err == nil && written > maxEdit {
-		err = httpError{http.StatusRequestEntityTooLarge, "Die Datei ist zu groß für den Editor (höchstens 10 MB)."}
-	}
 	if err != nil {
 		os.Remove(f.Name())
-		return err
+		return nil, err
 	}
-
 	// The live file may differ from the edited one after a forced save.
 	old := n
 	if cur, err := s.Engine.Store.Child(n.ParentID, n.Name); err == nil && !cur.IsDir {
@@ -76,11 +91,11 @@ func (s *Server) saveContent(w http.ResponseWriter, r *http.Request) error {
 	node, err := s.Engine.Commit(n.ParentID, n.Name, f.Name(), old.Encrypted, 0, true)
 	if err != nil {
 		os.Remove(f.Name())
-		return err
+		return nil, err
 	}
 	if old.TrashedAt == 0 {
 		if err := s.Engine.Store.MoveShares(old.ID, node.ID); err != nil {
-			return err
+			return nil, err
 		}
 		s.Thumbs.Remove(old.ID)
 	}
@@ -90,9 +105,8 @@ func (s *Server) saveContent(w http.ResponseWriter, r *http.Request) error {
 	if fresh, err := s.Engine.Store.Get(node.ID); err == nil {
 		node = fresh
 	}
-	s.Engine.Store.Log(store.LevelInfo, store.KindUpload, "„%s“ im Editor gespeichert (%d Bytes)", n.Name, written)
 	s.marked(node)
-	return writeJSON(w, node)
+	return node, nil
 }
 
 // newTextFile creates an empty file in a folder for the editor to open.

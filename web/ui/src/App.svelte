@@ -1,6 +1,10 @@
 <script>
   import { api } from './api.js'
+  import EditorPage from './EditorPage.svelte'
   import Explorer from './Explorer.svelte'
+
+  // /?edit=ID shows only the editor, for the Android app.
+  const editId = Number(new URLSearchParams(location.search).get('edit')) || 0
   import Gate from './Gate.svelte'
   import { live, on, startLive, stopLive } from './live.js'
 
@@ -48,7 +52,9 @@
 </script>
 
 {#if app}
-  {#if ready}
+  {#if ready && editId}
+    <EditorPage id={editId} />
+  {:else if ready}
     <Explorer {app} onlogout={refresh} />
   {:else}
     <Gate state={app} onchange={refresh} />

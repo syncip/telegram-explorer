@@ -27,8 +27,10 @@ type streams struct {
 
 func (s *streams) init() { s.once.Do(func() { s.done = make(chan struct{}) }) }
 
-// CloseStreams ends the open event streams, so a shutdown does not wait for them.
+// CloseStreams ends the open event streams, so a shutdown does not wait for
+// them, and stores what is open in the live editor.
 func (s *Server) CloseStreams() {
+	s.FlushLive()
 	s.streams.init()
 	select {
 	case <-s.streams.done:

@@ -1023,7 +1023,9 @@
 {/if}
 
 {#if editing}
-  <Editor node={editing} onclose={() => (editing = null)} onsaved={() => load()} />
+  {#key editing.id}
+    <Editor node={editing} onclose={() => (editing = null)} onsaved={() => load()} onopen={(n) => { load(); editing = n }} />
+  {/key}
 {/if}
 
 {#if modal?.type === 'prompt'}
