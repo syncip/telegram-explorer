@@ -8,6 +8,7 @@
     refresh: 'M15 9a6 6 0 1 1-1.8-4.3M15 2v3.5h-3.5',
     search: 'M8 14A6 6 0 1 0 8 2a6 6 0 0 0 0 12zm4.5-1.5L17 17',
     plus: 'M9 3v12M3 9h12',
+    note: 'M4 2h7l4 4v10H4zM11 2v4h4M6.5 10h6M6.5 13h4',
     upload: 'M9 12V3M5 7l4-4 4 4M3 15h12',
     download: 'M9 3v9M5 8l4 4 4-4M3 15h12',
     trash: 'M3 5h12M7 5V3h4v2m3 0-1 11H5L4 5',
