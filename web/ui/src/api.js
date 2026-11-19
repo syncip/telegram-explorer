@@ -97,3 +97,11 @@ export function typeLabel(node) {
   const ext = node.name.includes('.') ? node.name.split('.').pop().toUpperCase() : ''
   return ext ? `${ext}-Datei` : 'Datei'
 }
+
+// Files the text editor opens: plain text, notes, data and code.
+const EDITABLE = /\.(txt|text|md|markdown|csv|tsv|log|json|ya?ml|toml|ini|cfg|conf|env|properties|xml|html?|css|scss|js|mjs|cjs|ts|go|py|sh|bash|ps1|bat|cmd|sql|c|cpp|h|hpp|cs|java|kt|rs|php|rb|lua|srt|vtt|gitignore|dockerignore)$/i
+export const EDIT_LIMIT = 5 << 20
+
+export function editable(node) {
+  return !node.isDir && (EDITABLE.test(node.name) || /^\.env(\.|$)|^dockerfile$|^makefile$|^readme$/i.test(node.name))
+}

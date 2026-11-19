@@ -172,6 +172,12 @@ class FilesViewModel(application: Application) : AndroidViewModel(application) {
 
     fun mkdir(name: String) = act("Ordner „$name“ angelegt") { it.mkdir(_state.value.folder, name.trim()) }
 
+    /** Creates an empty text file in the open folder and hands it to the editor. */
+    fun newTextFile(name: String, onCreated: (Node) -> Unit) = act {
+        val node = it.newTextFile(_state.value.folder, name.trim())
+        onCreated(node)
+    }
+
     fun rename(node: Node, name: String) = act { it.rename(node.id, name.trim()); clearSelection() }
 
     fun move(ids: Set<Long>, target: Long, targetName: String) = act("${count(ids.size)} nach „$targetName“ verschoben") {

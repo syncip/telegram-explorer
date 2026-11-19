@@ -1,5 +1,5 @@
 <script>
-  import { api, formatDate, formatSize, kindOf, post, ROOT, stateLabel, typeLabel } from './api.js'
+  import { api, editable, EDIT_LIMIT, formatDate, formatSize, kindOf, post, ROOT, stateLabel, typeLabel } from './api.js'
   import { addDropped, addFolderInput, cancel as cancelUpload, enqueue, resume, retry as retryUpload, syncJobs, uploads } from './uploads.svelte.js'
   import Dialog from './Dialog.svelte'
   import FileIcon from './FileIcon.svelte'
@@ -7,6 +7,7 @@
   import Icon from './Icon.svelte'
   import Logs from './Logs.svelte'
   import Preview from './Preview.svelte'
+  import Editor from './Editor.svelte'
   import Properties from './Properties.svelte'
   import Settings from './Settings.svelte'
   import ShareDialog from './ShareDialog.svelte'
@@ -108,6 +109,7 @@
   let treeVersion = $state(0)
   let menu = $state(null)
   let modal = $state(null)
+  let editing = $state(null) // the file open in the text editor
   let error = $state('')
   let dragging = $state(false)
   let navOpen = $state(false)
@@ -309,6 +311,8 @@
     if (mode === 'trash') return
     if (node.isDir) {
       go(node.id)
+    } else if (editable(node) && node.size <= EDIT_LIMIT) {
+      editing = node
     } else if (kindOf(node) === 'pdf') {
       window.open(`/api/nodes/${node.id}/content?inline=1`, '_blank', 'noopener')
     } else {
@@ -355,6 +359,14 @@
 
   function ask(title, label, value, action) {
     modal = { type: 'prompt', title, label, value, action }
+  }
+
+  function newTextDocument(parent = currentId) {
+    ask('Neues Textdokument', 'Name', 'Notiz.txt', async (name) => {
+      const node = await post(`/nodes/${parent}/textfile`, { name })
+      await load()
+      editing = node
+    })
   }
 
   function newFolder(parent = currentId) {
@@ -448,6 +460,7 @@
     } else if (node) {
       const many = selected.size > 1
       if (!many) entries.push({ label: 'Öffnen', action: () => open(node), bold: true })
+      if (!many && editable(node)) entries.push({ label: 'Bearbeiten', icon: 'rename', action: () => (editing = node) })
       entries.push({ label: many || node.isDir ? 'Als ZIP herunterladen' : 'Herunterladen', icon: 'download', action: () => download() })
       entries.push({ label: many ? 'Auswahl prüfen' : node.isDir ? 'Ordner prüfen' : 'Datei prüfen', icon: 'check', action: () => verifyNodes(selection.map((n) => n.id)) })
       entries.push({ label: 'Inhalt prüfen (lädt herunter)', icon: 'download', action: () => verifyNodes(selection.map((n) => n.id), true) })
@@ -463,6 +476,7 @@
       }
     } else if (mode === 'files') {
       entries.push({ label: 'Neuer Ordner', icon: 'plus', action: () => newFolder() })
+      entries.push({ label: 'Neues Textdokument', icon: 'note', action: () => newTextDocument() })
       entries.push({ label: 'Dateien hochladen', icon: 'upload', action: () => fileInput.click() })
       if (clipboard.length) entries.push({ label: `Einfügen (${clipboard.length})`, icon: 'paste', action: paste })
       entries.push({ sep: true })
@@ -516,7 +530,7 @@
   }
 
   function onKey(e) {
-    if (modal || e.target.closest('input, select, textarea, dialog')) return
+    if (modal || editing || e.target.closest('input, select, textarea, dialog')) return
     const ctrl = e.ctrlKey || e.metaKey
     if (e.key === 'Delete') {
       mode === 'trash' ? purge() : canEdit && remove()
@@ -735,6 +749,7 @@
       <button class="tool" disabled={!items.length} onclick={() => purge(items)}><Icon name="trash" /><span>Papierkorb leeren</span></button>
     {:else if mode === 'files' || mode === 'search'}
       <button class="tool" aria-label="Neuer Ordner" title="Neuer Ordner" disabled={mode !== 'files'} onclick={() => newFolder()}><Icon name="plus" /><span>Neuer Ordner</span></button>
+      <button class="tool" aria-label="Neues Textdokument" title="Neues Textdokument" disabled={mode !== 'files'} onclick={() => newTextDocument()}><Icon name="note" /><span>Textdokument</span></button>
       <div class="split">
         <button class="tool" aria-label="Hochladen" title="Hochladen" disabled={mode !== 'files'} onclick={(e) => { e.stopPropagation(); uploadMenu = !uploadMenu }} aria-haspopup="menu" aria-expanded={uploadMenu}>
           <Icon name="upload" /><span>Hochladen</span>
@@ -1005,6 +1020,10 @@
       {/if}
     {/each}
   </div>
+{/if}
+
+{#if editing}
+  <Editor node={editing} onclose={() => (editing = null)} onsaved={() => load()} />
 {/if}
 
 {#if modal?.type === 'prompt'}

@@ -206,6 +206,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/nodes/{id}/children", s.open(s.children))
 	mux.HandleFunc("GET /api/nodes/{id}/content", s.open(s.content))
 	mux.HandleFunc("GET /api/nodes/{id}/thumb", s.open(s.thumb))
+	mux.HandleFunc("PUT /api/nodes/{id}/content", s.open(s.saveContent))
+	mux.HandleFunc("POST /api/nodes/{id}/textfile", s.open(s.newTextFile))
 	mux.HandleFunc("POST /api/nodes/{id}/mkdir", s.open(s.mkdir))
 	mux.HandleFunc("PATCH /api/nodes/{id}", s.open(s.patchNode))
 	mux.HandleFunc("POST /api/nodes/{id}/retry", s.open(s.retry))

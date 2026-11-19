@@ -47,6 +47,8 @@ import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
@@ -124,6 +126,7 @@ import java.util.Locale
 
 /** What a long press or the ⋮ menu can do with files. */
 enum class Action(val label: String, val icon: ImageVector) {
+    EDIT("Bearbeiten", Icons.Default.Edit),
     OPEN_WITH("Öffnen mit …", Icons.AutoMirrored.Filled.OpenInNew),
     SEND("Senden an …", Icons.AutoMirrored.Filled.Send),
     DOWNLOAD("Herunterladen", Icons.Default.Download),
@@ -140,6 +143,7 @@ fun FilesScreen(
     vm: FilesViewModel,
     snackbar: SnackbarHostState,
     onOpen: (Node, List<Node>) -> Unit,
+    onEdit: (Node) -> Unit,
     fetch: suspend (Node) -> File?,
 ) {
     val context = LocalContext.current
@@ -155,6 +159,7 @@ fun FilesScreen(
 
     var addSheet by remember { mutableStateOf(false) }
     var naming by remember { mutableStateOf(false) }
+    var newDoc by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<Node?>(null) }
     var moving by remember { mutableStateOf<Set<Long>?>(null) }
     var info by remember { mutableStateOf<Node?>(null) }
@@ -233,6 +238,7 @@ fun FilesScreen(
         if (nodes.isEmpty()) return
         val one = nodes.singleOrNull()
         when (action) {
+            Action.EDIT -> one?.let { onEdit(it); vm.clearSelection() }
             Action.OPEN_WITH -> one?.let { n -> scope.launch { fetch(n)?.let { Files.open(context, it, n) } } }
             Action.SEND -> scope.launch {
                 val files = mutableListOf<Pair<File, Node>>()
@@ -271,6 +277,7 @@ fun FilesScreen(
         when {
             s.selecting -> vm.toggle(n.id)
             n.isDir -> vm.open(n.id)
+            editable(n) && n.size <= EDIT_LIMIT -> onEdit(n)
             else -> onOpen(n, items.filter { !it.isDir })
         }
     }
@@ -303,7 +310,7 @@ fun FilesScreen(
                             DropdownMenuItem({ Text("Alle auswählen") }, { more = false; vm.selectAll() }, leadingIcon = { Icon(Icons.Default.SelectAll, null) })
                             if (sel.none { it.isDir }) DropdownMenuItem({ Text(Action.SEND.label) }, { more = false; run(Action.SEND, sel) }, leadingIcon = { Icon(Action.SEND.icon, null) })
                             if (sel.size == 1) {
-                                listOf(Action.LINK, Action.RENAME, Action.INFO).forEach { a ->
+                                listOfNotNull(Action.EDIT.takeIf { editable(sel[0]) }, Action.LINK, Action.RENAME, Action.INFO).forEach { a ->
                                     DropdownMenuItem({ Text(a.label) }, { more = false; run(a, sel) }, leadingIcon = { Icon(a.icon, null) })
                                 }
                             }
@@ -405,11 +412,13 @@ fun FilesScreen(
                 SheetItem(Icons.Default.Videocam, "Video aufnehmen") { addSheet = false; app.expectExternal(); takeVideo.launch(cameraUri("mp4", "VID")) }
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
                 SheetItem(Icons.Default.CreateNewFolder, "Neuer Ordner") { addSheet = false; naming = true }
+                SheetItem(Icons.Default.EditNote, "Neues Textdokument") { addSheet = false; newDoc = true }
             }
         }
     }
 
     if (naming) NameDialog("Neuer Ordner", "Neuer Ordner", "Anlegen", { naming = false }) { naming = false; vm.mkdir(it) }
+    if (newDoc) NameDialog("Neues Textdokument", "Notiz.txt", "Anlegen", { newDoc = false }) { newDoc = false; vm.newTextFile(it, onEdit) }
     renaming?.let { n -> NameDialog("Umbenennen", n.name, "Umbenennen", { renaming = null }) { renaming = null; vm.rename(n, it) } }
     moving?.let { ids ->
         if (api != null) {
@@ -501,7 +510,7 @@ private fun Row(
                 Box {
                     IconButton({ menu = true }) { Icon(Icons.Default.MoreVert, "Aktionen für ${n.name}") }
                     DropdownMenu(menu, { menu = false }) {
-                        Action.entries.filter { a -> !(n.isDir && (a == Action.OPEN_WITH || a == Action.SEND)) }.forEach { a ->
+                        Action.entries.filter { a -> !(n.isDir && (a == Action.OPEN_WITH || a == Action.SEND)) && (a != Action.EDIT || editable(n)) }.forEach { a ->
                             DropdownMenuItem(
                                 { Text(a.label, color = if (a == Action.DELETE) MaterialTheme.colorScheme.error else Color.Unspecified) },
                                 { menu = false; onAction(a) },

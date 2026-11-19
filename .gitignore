@@ -1,5 +1,5 @@
 .env
-data/
+/data/
 node_modules/
 web/dist/*
 !web/dist/.gitkeep

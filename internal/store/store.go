@@ -1012,3 +1012,15 @@ func (s *Store) StaleUploads(cutoff int64) ([]string, error) {
 	}
 	return out, rows.Err()
 }
+
+// Alive reports whether a node and all its folders are outside the trash.
+func (s *Store) Alive(n *Node) bool {
+	return n.TrashedAt == 0 && s.alive(n)
+}
+
+// MoveShares hands the share links of one node to another, so a link keeps
+// working when a file is saved as a new version.
+func (s *Store) MoveShares(from, to int64) error {
+	_, err := s.db.Exec(`UPDATE shares SET node_id = ? WHERE node_id = ?`, to, from)
+	return err
+}
