@@ -13,8 +13,8 @@ android {
         applicationId 'com.wagnermartin.telex'
         minSdk 30
         targetSdk 36
-        versionCode 3
-        versionName '2.0.1'
+        versionCode 4
+        versionName '2.1.0'
     }
 
     // The release key lives outside the repo: telex.keystoreProperties=<path> in
