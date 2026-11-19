@@ -43,6 +43,13 @@
         </activity>
 
         <activity
+            android:name=".EditorActivity"
+            android:theme="@style/Theme.Telex.NoActionBar"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".WebAdminActivity"
             android:theme="@style/Theme.Telex.NoActionBar"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"

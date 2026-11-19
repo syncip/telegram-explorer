@@ -60,6 +60,7 @@ type Server struct {
 	Thumbs *thumbs.Maker
 
 	streams     streams
+	live        liveHub
 	uploadLocks sync.Map
 	grants      sync.Map // share password grant -> expiry
 }
@@ -208,6 +209,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/nodes/{id}/thumb", s.open(s.thumb))
 	mux.HandleFunc("PUT /api/nodes/{id}/content", s.open(s.saveContent))
 	mux.HandleFunc("POST /api/nodes/{id}/textfile", s.open(s.newTextFile))
+	mux.HandleFunc("POST /api/live/{id}/join", s.open(s.liveJoin))
+	mux.HandleFunc("POST /api/live/{id}/push", s.open(s.livePush))
+	mux.HandleFunc("GET /api/live/{id}/pull", s.open(s.livePull))
+	mux.HandleFunc("POST /api/live/{id}/presence", s.open(s.livePresence))
+	mux.HandleFunc("POST /api/live/{id}/leave", s.open(s.liveLeave))
 	mux.HandleFunc("POST /api/nodes/{id}/mkdir", s.open(s.mkdir))
 	mux.HandleFunc("PATCH /api/nodes/{id}", s.open(s.patchNode))
 	mux.HandleFunc("POST /api/nodes/{id}/retry", s.open(s.retry))
@@ -470,6 +476,7 @@ func (s *Server) unlock(w http.ResponseWriter, r *http.Request) error {
 	s.Auth.Limiter.Success(key)
 	s.Engine.SetVault(v)
 	s.OnUnlock()
+	go s.liveRecover()
 	return writeJSON(w, map[string]bool{"ok": true})
 }
 
